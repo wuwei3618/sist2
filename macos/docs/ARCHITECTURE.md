@@ -368,5 +368,8 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 | 部分 | 验证方式 |
 |---|---|
-| SistCore、SistStore、SistScan、通用解析器、sist、sist-worker | Linux（Swift 6.2）上编译通过，50 个单元/集成测试通过，并用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时） |
-| PDFKit/ImageIO/Vision/AVFoundation/CoreText/QuickLook 解析器、SwiftUI App | 需要 macOS 编译。`.github/workflows/macos-app.yml` 在 GitHub 的 macOS runner 上编译、跑测试并打包 .app |
+| SistCore、SistStore、SistScan、通用解析器、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，50 个单元/集成测试全部通过；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时） |
+| PDFKit/ImageIO/Vision/AVFoundation/CoreText/QuickLook 解析器、SwiftUI App | macOS 15 runner 上编译通过，`make-app.sh` 打出的 arm64 + x86_64 通用 `Sist.app` 通过 `codesign --verify --strict` |
+| 界面交互、各 Apple 框架解析器对真实文件的效果 | 尚未验证：CI 只编译不运行界面，也没有 PDF/图片/音视频的样例文件测试。需要在 Mac 上实际走查 |
+
+CI：`.github/workflows/macos-app.yml`，`macos/` 有改动时在 macOS 和 Linux 上各跑一遍。

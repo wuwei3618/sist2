@@ -134,13 +134,15 @@ final class AppModel {
     func scan(_ id: Int64) {
         guard let catalog, scanTasks[id] == nil else { return }
         let coordinator = ScanCoordinator(catalog: catalog)
+        let report: @Sendable (ScanProgress) -> Void = { [weak self] progress in
+            guard let self else { return }
+            Task { @MainActor in
+                self.activeScans[id] = progress
+            }
+        }
         scanTasks[id] = Task { [weak self] in
             do {
-                try await coordinator.scan(sourceId: id, progress: { progress in
-                    Task { @MainActor [weak self] in
-                        self?.activeScans[id] = progress
-                    }
-                })
+                try await coordinator.scan(sourceId: id, progress: report)
             } catch is CancellationError {
             } catch {
                 self?.errorMessage = "扫描失败：\(error)"

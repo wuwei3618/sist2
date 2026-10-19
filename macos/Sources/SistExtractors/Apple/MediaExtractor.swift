@@ -94,7 +94,9 @@ public struct MediaExtractor: Extractor {
         var totalBitrate: Float = 0
         var hasVideo = false
         for track in tracks {
-            let (mediaType, formats, rate) = try await track.load(.mediaType, .formatDescriptions, .estimatedDataRate)
+            // mediaType is a plain property, not one of the asynchronously loaded ones
+            let mediaType = track.mediaType
+            let (formats, rate) = try await track.load(.formatDescriptions, .estimatedDataRate)
             totalBitrate += rate
             let codec = formats.first.map { fourCC(CMFormatDescriptionGetMediaSubType($0)) }
             if mediaType == .video {

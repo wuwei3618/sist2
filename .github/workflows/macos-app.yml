@@ -1,0 +1,56 @@
+name: macos-app
+
+# The native macOS app in macos/. Independent of the sist2 C build.
+on:
+  push:
+    paths: ["macos/**", ".github/workflows/macos-app.yml"]
+  pull_request:
+    paths: ["macos/**", ".github/workflows/macos-app.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: build + test (macOS)
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # Builds the PDFKit / Vision / AVFoundation extractors and the SwiftUI app, which Linux skips
+      - name: Build
+        run: swift build --build-tests
+
+      - name: Test
+        run: swift test
+
+      - name: Build the app bundle
+        run: scripts/make-app.sh
+
+  linux:
+    name: build + test (Linux)
+    runs-on: ubuntu-24.04
+    container: swift:6.2
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SQLite headers
+        run: apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev
+
+      - name: Test
+        run: swift test

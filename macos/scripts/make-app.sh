@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Sist.app (universal: arm64 + x86_64) from the Swift package, signs it and optionally
+# Builds Sist.app (universal: arm64 + x86_64, or ARCHS="arm64") from the Swift package, signs it and optionally
 # notarizes it for distribution outside the Mac App Store (Developer ID).
 #
 #   scripts/make-app.sh                       # ad-hoc signed, runs on this Mac
@@ -16,21 +16,31 @@ VERSION="${VERSION:-0.1.0}"
 BUILD="${BUILD:-$(date +%Y%m%d%H%M)}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 APP="build/Sist.app"
-ARCHS=(--arch arm64 --arch x86_64)
+# Each architecture is built with SwiftPM's native build system and merged with lipo: passing
+# several --arch flags at once switches SwiftPM to the xcbuild backend, which fails on this package
+read -r -a ARCHS <<< "${ARCHS:-arm64 x86_64}"
 
-for product in SistApp sist-worker sist; do
-    swift build -c release "${ARCHS[@]}" --product "$product"
+BINS=()
+for arch in "${ARCHS[@]}"; do
+    swift build -c release --arch "$arch"
+    BINS+=("$(swift build -c release --arch "$arch" --show-bin-path)")
 done
-BIN="$(swift build -c release "${ARCHS[@]}" --show-bin-path)"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN/SistApp" "$APP/Contents/MacOS/Sist"
+universal() {
+    local inputs=()
+    for bin in "${BINS[@]}"; do
+        inputs+=("$bin/$1")
+    done
+    lipo -create "${inputs[@]}" -output "$2"
+}
+universal SistApp "$APP/Contents/MacOS/Sist"
 # Found by WorkerLocator through Bundle.main.url(forAuxiliaryExecutable:)
-cp "$BIN/sist-worker" "$APP/Contents/MacOS/sist-worker"
+universal sist-worker "$APP/Contents/MacOS/sist-worker"
 # The command line tool ships inside the app: ln -s /Applications/Sist.app/Contents/MacOS/sist /usr/local/bin/sist
-cp "$BIN/sist" "$APP/Contents/MacOS/sist"
-for bundle in "$BIN"/*.bundle; do
+universal sist "$APP/Contents/MacOS/sist"
+for bundle in "${BINS[0]}"/*.bundle; do
     [ -e "$bundle" ] && cp -R "$bundle" "$APP/Contents/Resources/"
 done
 sed -e "s/__BUNDLE_ID__/$BUNDLE_ID/" -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" \

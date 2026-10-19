@@ -15,6 +15,24 @@ func makeTree(_ files: [String: String]) throws -> String {
     return root
 }
 
+final class TestBundleMarker {}
+
+/// `swift test` builds sist-worker next to the test bundle. On macOS, Swift Testing loads that
+/// bundle from a helper process, so WorkerLocator (which looks next to the main executable) cannot
+/// see it: look next to the bundle, then in the package's own build directory.
+func workerExecutable() -> URL? {
+    if let found = WorkerLocator.find() {
+        return found
+    }
+    let packageRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let candidates = [
+        Bundle(for: TestBundleMarker.self).bundleURL.deletingLastPathComponent().appendingPathComponent("sist-worker"),
+        packageRoot.appendingPathComponent(".build/debug/sist-worker"),
+    ]
+    return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+}
+
 func setMtime(_ path: String, _ seconds: TimeInterval) throws {
     try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: seconds)], ofItemAtPath: path)
 }
@@ -66,12 +84,12 @@ func setMtime(_ path: String, _ seconds: TimeInterval) throws {
     }
 
     @Test func subprocess() async throws {
-        let worker = try #require(WorkerLocator.find(), "sist-worker should be built next to the tests")
+        let worker = try #require(workerExecutable(), "sist-worker should be built next to the tests")
         try await run(.subprocess(worker))
     }
 
     @Test func crashedAndHungParsersOnlyCostTheirFile() async throws {
-        let worker = try #require(WorkerLocator.find())
+        let worker = try #require(workerExecutable())
         let root = try makeTree([
             "ok1.txt": "fine", "ok2.txt": "fine", "ok3.txt": "fine",
             "sist-test-crash.txt": "boom", "sist-test-hang.txt": "zzz",

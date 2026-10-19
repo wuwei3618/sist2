@@ -67,7 +67,7 @@ public enum WorkerLocator {
                 .appendingPathComponent(executableName))
         }
         #if os(macOS)
-        // Under `swift test` on macOS the test bundle is loaded by Xcode's xctest tool
+        // Tests run from Xcode are loaded into Xcode's xctest tool, next to the built products
         // (Bundle.allBundles crashes in swift-corelibs-foundation, where it is not needed)
         for bundle in Bundle.allBundles where bundle.bundlePath.hasSuffix(".xctest") {
             candidates.append(bundle.bundleURL.deletingLastPathComponent().appendingPathComponent(executableName))

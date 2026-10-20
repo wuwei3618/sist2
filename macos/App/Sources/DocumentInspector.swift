@@ -159,11 +159,6 @@ struct DocumentInspector: View {
                         }
                         TextField("添加标签", text: $newTag)
                             .textFieldStyle(.roundedBorder)
-                        if !document.isArchiveMember {
-                            Text("与访达标签双向同步")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
                             .onSubmit {
                                 let tag = newTag
                                 newTag = ""
@@ -172,6 +167,11 @@ struct DocumentInspector: View {
                                     await load()
                                 }
                             }
+                        if !document.isArchiveMember {
+                            Text("与访达标签双向同步")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }

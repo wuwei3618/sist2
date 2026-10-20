@@ -517,7 +517,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 | 部分 | 验证方式 |
 |---|---|
-| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，121 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
+| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，124 个单元/集成测试全部通过（macOS 上另有 Apple 框架相关的测试），压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
 | PDFKit/ImageIO/Vision/AVFoundation/CoreText/QuickLook 解析器、SwiftUI App | macOS 15 runner 上编译通过，`make-app.sh` 打出的 arm64 + x86_64 通用 `Sist.app` 通过 `codesign --verify --strict` |
 | 界面交互、各 Apple 框架解析器对真实文件的效果 | 尚未验证：CI 只编译不运行界面，也没有 PDF/图片/音视频的样例文件测试。需要在 Mac 上实际走查 |
 

@@ -33,7 +33,13 @@ public final class Catalog: Sendable {
         }
         self.path = path
         self.pool = try DatabasePool(path: path, configuration: configuration)
-        try Schema.migrator().migrate(pool)
+        let migrator = Schema.migrator()
+        let applied = try pool.read { db in try migrator.appliedIdentifiers(db) }
+        try migrator.migrate(pool)
+        // v4 rewrites the whole index and compresses the stored texts: give the space back
+        if !applied.isEmpty && !applied.contains("v4") {
+            try pool.vacuum()
+        }
     }
 
     /// `~/Library/Application Support/Sist/catalog.sqlite` on macOS, shared by the app and the CLI
@@ -161,7 +167,8 @@ public final class Catalog: Sendable {
             let metadata = metadataJSON.flatMap {
                 try? JSONDecoder().decode([String: MetadataValue].self, from: Data($0.utf8))
             } ?? [:]
-            let content = try String.fetchOne(db, sql: "SELECT text FROM content WHERE documentId = ?", arguments: [id])
+            let content = try DatabaseValue.fetchOne(db, sql: "SELECT text FROM content WHERE documentId = ?", arguments: [id])
+                .flatMap(ContentCodec.decode)
             let tags = try String.fetchAll(db, sql: "SELECT name FROM tag WHERE documentId = ? ORDER BY name", arguments: [id])
             return DocumentDetail(summary: summary, content: content, metadata: metadata,
                                   checksum: row["checksum"], error: row["error"], tags: tags, scanId: row["scanId"])

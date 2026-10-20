@@ -58,7 +58,7 @@ swift test
 macos/
 ├── Package.swift
 ├── Sources/
-│   ├── SistCore/         模型、MIME、中文 bigram、查询解析、高亮、遍历、忽略规则、worker 协议
+│   ├── SistCore/         模型、MIME、中文单字索引、查询解析、高亮、遍历、忽略规则、worker 协议
 │   ├── SistStore/        catalog 数据库：结构、增量写入、搜索、统计
 │   ├── SistExtractors/   各格式解析器；Apple/ 下为仅 macOS 的 PDFKit、ImageIO、Vision、AVFoundation…
 │   ├── SistScan/         扫描调度、进程内/子进程解析池

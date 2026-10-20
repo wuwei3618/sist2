@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import GRDB
 import SistCore
 @testable import SistStore
 
@@ -360,5 +361,61 @@ func doc(_ path: String, parent: String? = nil, content: String? = nil, mime: St
             try Int.fetchOne(db, sql: "SELECT count(*) FROM document_fts WHERE document_fts MATCH 'searchable'")
         }
         #expect(rows == 0)
+    }
+
+    @Test func upgradingFromVersion3ReindexesAndCompresses() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sist-store-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let path = directory + "/catalog.sqlite"
+        let long = String(repeating: "季度销售报告，包含华东地区的数据。", count: 60)
+
+        // A catalog as version 3 left it: bigrams in the index, text stored as is
+        do {
+            let queue = try DatabaseQueue(path: path)
+            try Schema.migrator().migrate(queue, upTo: "v3")
+            try await queue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO source (id, name, root, options, createdAt) VALUES (1, 'r', '/r', '{}', '2024-01-01');
+                    INSERT INTO document (id, sourceId, path, directory, name, ext, category, size, mtime, scanId, seenScanId)
+                    VALUES (1, 1, '/r/报告.txt', '/r', '报告.txt', 'txt', 'text', 10, 0, 1, 1);
+                    INSERT INTO content (documentId, text) VALUES (1, ?);
+                    INSERT INTO document_fts (rowid, name, content, path) VALUES (1, '报告 告 .txt', '季度 度销', '');
+                    """, arguments: [long])
+            }
+        }
+
+        let catalog = try Catalog(path: path)
+        // Single characters and phrases are found the new way
+        #expect(try await catalog.search(SearchQuery(text: "华")).total == 1)
+        #expect(try await catalog.search(SearchQuery(text: "华东地区")).total == 1)
+        #expect(try await catalog.search(SearchQuery(text: "name:告")).total == 1)
+        let stored = try await catalog.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT typeof(text) FROM content WHERE documentId = 1")
+        }
+        #expect(stored == "blob")
+        #expect(try await catalog.document(id: 1)?.content == long)
+        let results = try await catalog.search(SearchQuery(text: "华东"))
+        #expect(results.hits.first?.excerpt?.hasHighlights == true)
+    }
+}
+
+@Suite struct ContentCodecTests {
+    @Test func longTextsAreCompressedShortOnesKept() throws {
+        #expect(ContentCodec.compress("short text") == nil)
+        #expect(ContentCodec.decode("short text".databaseValue) == "short text")
+
+        for text in [String(repeating: "文档管理系统的说明，", count: 200), String(repeating: "lorem ipsum ", count: 100)] {
+            let compressed = try #require(ContentCodec.compress(text))
+            #expect(compressed.count < text.utf8.count / 2)
+            #expect(ContentCodec.decode(compressed.databaseValue) == text)
+            #expect(ContentCodec.decode(ContentCodec.storedValue(text, compressed: nil)) == text)
+        }
+    }
+
+    @Test func damagedDataDecodesToNothing() {
+        #expect(ContentCodec.decode(Data([1, 2, 3]).databaseValue) == nil)
+        #expect(ContentCodec.decode(Data([200, 0, 0, 0, 1, 2, 3, 4]).databaseValue) == nil)
+        #expect(ContentCodec.decode(DatabaseValue.null) == nil)
     }
 }

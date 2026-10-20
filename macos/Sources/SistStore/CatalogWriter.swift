@@ -116,7 +116,9 @@ public struct CatalogWriter: Sendable {
                 ]) else { continue }
 
                 if let content = doc.content, !content.isEmpty {
-                    try upsertContent.execute(arguments: [id, content])
+                    try upsertContent.execute(arguments: [
+                        id, ContentCodec.storedValue(content, compressed: result.compressedContent),
+                    ])
                 } else {
                     try deleteContent.execute(arguments: [id])
                 }

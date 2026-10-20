@@ -4,11 +4,15 @@ import Foundation
 ///
 /// `unicode61` splits on separators only, so a run of Chinese or Japanese characters becomes one
 /// giant token and searching for a word inside it finds nothing. Text is therefore rewritten
-/// before it reaches FTS5: every CJK run becomes its overlapping bigrams followed by its last
-/// character on its own (`文档管理` → `文档 档管 管理 理`). Other scripts are left to `unicode61`.
+/// before it reaches FTS5: every CJK character becomes a token of its own (`文档管理` →
+/// `文 档 管 理`), and a query is the phrase of its characters, which matches a substring of any
+/// length. Other scripts are left to `unicode61`.
 ///
-/// Queries are rewritten the same way (see `queryPhrase`) so that a CJK substring of any length
-/// matches as a phrase of consecutive bigrams.
+/// Overlapping bigrams (`文档 档管 管理`), the usual alternative, make phrase queries on common
+/// words faster but the index twice as large and writes four times slower, and a single character
+/// can then only be found as a slow prefix query. Measured on 96,000 Wikipedia and Wikinews
+/// articles (600 MB of Chinese text): 436 MB instead of 788 MB of index, 15–150 ms instead of
+/// 1–35 ms for multi-character words, 160 ms instead of 1.7 s for `的`.
 public enum SearchText {
     public static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
@@ -52,86 +56,29 @@ public enum SearchText {
 
     /// The text stored in the FTS index for `text`.
     public static func indexable(_ text: String) -> String {
-        let normalized = normalize(text)
-        var out = String.UnicodeScalarView()
-        var run: [Unicode.Scalar] = []
-
-        func flushRun() {
-            guard !run.isEmpty else { return }
-            out.append(" ")
-            appendBigrams(of: run, trailingUnigram: true, to: &out)
-            out.append(" ")
-            run.removeAll(keepingCapacity: true)
-        }
-
-        for scalar in normalized.unicodeScalars {
-            if isCJK(scalar) {
-                run.append(scalar)
-            } else {
-                flushRun()
-                out.append(scalar)
-            }
-        }
-        flushRun()
-        return String(out)
+        separatingCJK(normalize(text))
     }
 
     /// Rewrites one query term (a word or a quoted phrase) into the text of an FTS5 phrase.
-    ///
-    /// A CJK run at the end of the term emits its bigrams only, because the matching text may
-    /// continue past it; a run followed by more tokens must end where the indexed run ends, so it
-    /// also emits the trailing unigram, exactly as `indexable` does. A single CJK character at the
-    /// end can only be matched as a prefix (`文` must find `文档`), which `prefix` reports.
-    public static func queryPhrase(_ term: String) -> (text: String, prefix: Bool) {
-        let scalars = Array(normalize(term).unicodeScalars)
-        var out = String.UnicodeScalarView()
-        var prefix = false
-        var index = 0
-
-        while index < scalars.count {
-            let scalar = scalars[index]
-            guard isCJK(scalar) else {
-                out.append(scalar)
-                index += 1
-                continue
-            }
-            var end = index
-            while end < scalars.count && isCJK(scalars[end]) {
-                end += 1
-            }
-            let run = Array(scalars[index..<end])
-            let followedByToken = scalars[end...].contains { isTokenCharacter($0) }
-
-            out.append(" ")
-            if followedByToken {
-                appendBigrams(of: run, trailingUnigram: true, to: &out)
-            } else if run.count == 1 {
-                out.append(run[0])
-                prefix = true
-            } else {
-                appendBigrams(of: run, trailingUnigram: false, to: &out)
-            }
-            out.append(" ")
-            index = end
-        }
-        return (String(out).trimmingCharacters(in: .whitespaces), prefix)
+    public static func queryPhrase(_ term: String) -> String {
+        separatingCJK(normalize(term)).trimmingCharacters(in: .whitespaces)
     }
 
-    private static func appendBigrams(of run: [Unicode.Scalar], trailingUnigram: Bool,
-                                      to out: inout String.UnicodeScalarView) {
-        if run.count == 1 {
-            out.append(run[0])
-            return
+    private static func separatingCJK(_ text: String) -> String {
+        var out = String.UnicodeScalarView()
+        var previousWasCJK = false
+        for scalar in text.unicodeScalars {
+            let cjk = isCJK(scalar)
+            if cjk && !previousWasCJK {
+                out.append(" ")
+            }
+            out.append(scalar)
+            if cjk {
+                out.append(" ")
+            }
+            previousWasCJK = cjk
         }
-        for i in 0..<(run.count - 1) {
-            if i > 0 { out.append(" ") }
-            out.append(run[i])
-            out.append(run[i + 1])
-        }
-        if trailingUnigram {
-            out.append(" ")
-            out.append(run[run.count - 1])
-        }
+        return String(out)
     }
 
     /// The full-text row of a document of a source rooted at `root`. The path column holds the

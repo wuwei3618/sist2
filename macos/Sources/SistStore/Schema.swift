@@ -138,6 +138,7 @@ enum Schema {
             // The FTS table kept its own copy of the rewritten text, which nothing reads: excerpts
             // come from `content`. Contentless, it takes about a third of the space. Deleting rows
             // from a contentless table needs SQLite 3.43 (macOS 14); older ones keep the table.
+            // v4 fills it.
             let version = try String.fetchOne(db, sql: "SELECT sqlite_version()") ?? ""
             guard supportsContentlessDelete(version: version) else { return }
             try db.execute(sql: """
@@ -149,18 +150,42 @@ enum Schema {
                 );
                 INSERT INTO document_fts(document_fts, rank) VALUES ('rank', 'bm25(8.0, 8.0, 3.0, 5.0)');
                 """)
+        }
+
+        migrator.registerMigration("v4") { db in
+            // CJK text is indexed one character per token instead of as bigrams (see SearchText),
+            // and long texts are stored compressed (see ContentCodec): every row is rewritten
+            let definition = try String.fetchOne(
+                db, sql: "SELECT sql FROM sqlite_master WHERE name = 'document_fts'") ?? ""
+            try db.execute(sql: "DROP TABLE document_fts")
+            try db.execute(sql: definition)
+            try db.execute(sql: "INSERT INTO document_fts(document_fts, rank) VALUES ('rank', 'bm25(8.0, 8.0, 3.0, 5.0)')")
+
             let insert = try db.makeStatement(
                 sql: "INSERT INTO document_fts (rowid, name, title, content, path) VALUES (?, ?, ?, ?, ?)")
-            let rows = try Row.fetchCursor(db, sql: """
-                SELECT d.id, d.path, d.name, d.ext, d.size, d.mtime, d.title, s.root, c.text
-                FROM document d JOIN source s ON s.id = d.sourceId LEFT JOIN content c ON c.documentId = d.id
-                """)
-            while let row = try rows.next() {
-                let document = ParsedDocument(path: row["path"], name: row["name"], ext: row["ext"], mime: nil,
-                                              size: row["size"], mtime: row["mtime"], title: row["title"],
-                                              content: row["text"])
-                let text = SearchText.indexedText(for: document, root: row["root"])
-                try insert.execute(arguments: [row["id"] as Int64, text.name, text.title, text.content, text.path])
+            let compress = try db.makeStatement(sql: "UPDATE content SET text = ? WHERE documentId = ?")
+            var lastId: Int64 = 0
+            while true {
+                // In batches: the content table is updated along the way
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT d.id, d.path, d.name, d.title, s.root, c.text
+                    FROM document d JOIN source s ON s.id = d.sourceId LEFT JOIN content c ON c.documentId = d.id
+                    WHERE d.id > ? ORDER BY d.id LIMIT 1000
+                    """, arguments: [lastId])
+                guard let last = rows.last else { break }
+                lastId = last["id"]
+                for row in rows {
+                    let id: Int64 = row["id"]
+                    let content = ContentCodec.decode(row["text"])
+                    if let content, case .string = (row["text"] as DatabaseValue).storage,
+                       let compressed = ContentCodec.compress(content) {
+                        try compress.execute(arguments: [compressed, id])
+                    }
+                    let document = ParsedDocument(path: row["path"], name: row["name"], ext: "", mime: nil,
+                                                  size: 0, mtime: 0, title: row["title"], content: content)
+                    let text = SearchText.indexedText(for: document, root: row["root"])
+                    try insert.execute(arguments: [id, text.name, text.title, text.content, text.path])
+                }
             }
         }
 

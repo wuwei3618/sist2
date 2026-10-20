@@ -219,10 +219,12 @@ public struct ScanCoordinator: Sendable {
                             let root = source.root
                             group.addTask {
                                 var job = await pool.parse(entry)
-                                // The rewriting for the full-text index runs here, in parallel
+                                // The rewriting for the full-text index and the compression run
+                                // here, in parallel
                                 for index in job.results.indices {
-                                    job.results[index].indexedText = SearchText.indexedText(
-                                        for: job.results[index].document, root: root)
+                                    let document = job.results[index].document
+                                    job.results[index].indexedText = SearchText.indexedText(for: document, root: root)
+                                    job.results[index].compressedContent = document.content.flatMap(ContentCodec.compress)
                                 }
                                 return job
                             }

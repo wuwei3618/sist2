@@ -28,8 +28,15 @@ let package = Package(
             name: "SistStore",
             dependencies: [
                 "SistCore",
+                "CSistZlib",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
+        ),
+
+        // zlib, for the stored texts (ZIPFoundation has a CZlib module of its own on Linux)
+        .target(
+            name: "CSistZlib",
+            linkerSettings: [.linkedLibrary("z")]
         ),
 
         // libarchive, as sist2 uses it: tar, 7z, rar, zip, iso... macOS has the library but no
@@ -78,7 +85,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SistStoreTests",
-            dependencies: ["SistStore"]
+            dependencies: ["SistStore", .product(name: "GRDB", package: "GRDB.swift")]
         ),
         .testTarget(
             name: "SistExtractorsTests",

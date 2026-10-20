@@ -159,21 +159,32 @@ extension Catalog {
             }
 
             // Excerpts are cut from the stored text, around the terms that were typed (without
-            // terms there is nothing to show one for)
-            var contents: [Int64: String] = [:]
+            // terms there is nothing to show one for). Decompressing and matching take longer
+            // than the query itself, so they run in parallel.
+            var stored: [Int64: DatabaseValue] = [:]
             if !documents.isEmpty && !parsed.highlightTerms.isEmpty {
                 let ids = documents.map(\.id)
                 let rows = try Row.fetchAll(
-                    db, sql: "SELECT documentId, substr(text, 1, 100000) AS text FROM content WHERE documentId IN (\(Self.placeholders(ids.count)))",
+                    db, sql: "SELECT documentId, text FROM content WHERE documentId IN (\(Self.placeholders(ids.count)))",
                     arguments: StatementArguments(ids))
                 for row in rows {
-                    contents[row["documentId"]] = row["text"]
+                    stored[row["documentId"]] = row["text"]
                 }
             }
-            let hits = documents.map { document in
-                SearchHit(document: document,
-                          excerpt: contents[document.id].flatMap { Highlighter.excerpt($0, terms: parsed.highlightTerms) })
+            let texts = documents.map { stored[$0.id] }
+            let terms = parsed.highlightTerms
+            var excerpts = [Snippet?](repeating: nil, count: texts.count)
+            excerpts.withUnsafeMutableBufferPointer { buffer in
+                nonisolated(unsafe) let output = buffer
+                DispatchQueue.concurrentPerform(iterations: texts.count) { index in
+                    guard let value = texts[index], var text = ContentCodec.decode(value) else { return }
+                    if text.utf8.count > 100_000 {
+                        text = String(text.prefix(100_000))
+                    }
+                    output[index] = Highlighter.excerpt(text, terms: terms)
+                }
             }
+            let hits = zip(documents, excerpts).map { SearchHit(document: $0, excerpt: $1) }
 
             return SearchResults(hits: hits, total: total, categoryCounts: categoryCounts,
                                  highlightTerms: parsed.highlightTerms, elapsed: Date().timeIntervalSince(started))

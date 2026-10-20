@@ -6,15 +6,16 @@ import Testing
         SearchText.indexable(text).split(separator: " ").map(String.init)
     }
 
-    @Test func cjkRunsBecomeBigramsAndTrailingUnigram() {
-        #expect(tokens("文档管理") == ["文档", "档管", "管理", "理"])
+    @Test func cjkCharactersBecomeTokens() {
+        #expect(tokens("文档管理") == ["文", "档", "管", "理"])
         #expect(tokens("文") == ["文"])
+        #expect(tokens("第3章，结论") == ["第", "3", "章", ",", "结", "论"])
     }
 
     @Test func otherScriptsAreLeftToTheTokenizer() {
         #expect(SearchText.indexable("hello world") == "hello world")
-        #expect(tokens("iPhone手机壳") == ["iPhone", "手机", "机壳", "壳"])
-        #expect(tokens("한국어 텍스트") == ["한국", "국어", "어", "텍스", "스트", "트"])
+        #expect(tokens("iPhone手机壳") == ["iPhone", "手", "机", "壳"])
+        #expect(tokens("한국어 텍스트") == ["한", "국", "어", "텍", "스", "트"])
     }
 
     @Test func fullWidthIsFolded() {
@@ -22,14 +23,12 @@ import Testing
     }
 
     @Test func queryPhrases() {
-        #expect(SearchText.queryPhrase("文档") == ("文档", false))
-        #expect(SearchText.queryPhrase("文档管理") == ("文档 档管 管理", false))
-        // A single character can only be found as the start of a bigram
-        #expect(SearchText.queryPhrase("文") == ("文", true))
-        #expect(SearchText.queryPhrase("b文") == ("b 文", true))
-        // A run followed by more text must end where the indexed run ends
-        #expect(SearchText.queryPhrase("文字b") == ("文字 字 b", false))
-        #expect(SearchText.queryPhrase("hello") == ("hello", false))
+        #expect(SearchText.queryPhrase("文档") == "文 档")
+        #expect(SearchText.queryPhrase("文档管理") == "文 档 管 理")
+        #expect(SearchText.queryPhrase("文") == "文")
+        #expect(SearchText.queryPhrase("b文") == "b 文")
+        #expect(SearchText.queryPhrase("文字b") == "文 字 b")
+        #expect(SearchText.queryPhrase("hello") == "hello")
     }
 }
 
@@ -57,8 +56,9 @@ import Testing
     }
 
     @Test func cjk() {
-        #expect(QueryParser.parse("季度报告").ftsExpression == "\"季度 度报 报告\"")
-        #expect(QueryParser.parse("报").ftsExpression == "\"报\"*")
+        #expect(QueryParser.parse("季度报告").ftsExpression == "\"季 度 报 告\"")
+        #expect(QueryParser.parse("报").ftsExpression == "\"报\"")
+        #expect(QueryParser.parse("报告*").ftsExpression == "\"报 告\"*")
     }
 
     @Test func hostileInputNeverBreaksTheSyntax() {

@@ -11,6 +11,8 @@ import SistStore
 @Observable
 final class AppModel {
     private(set) var catalog: Catalog?
+    /// Until the catalog is open, or failed to open
+    private(set) var isOpeningCatalog = true
     private(set) var sources: [SourceInfo] = []
     private(set) var tags: [TagCount] = []
     private(set) var activeScans: [Int64: ScanProgress] = [:]
@@ -51,13 +53,18 @@ final class AppModel {
         guard !started else { return }
         started = true
         do {
-            let catalog = try Catalog(path: Catalog.defaultPath)
+            // Off the main thread: after an update, opening may migrate a large catalog
+            let catalog = try await Task.detached(priority: .userInitiated) {
+                try Catalog(path: Catalog.defaultPath)
+            }.value
             self.catalog = catalog
+            isOpeningCatalog = false
             search.catalog = catalog
             await refreshSources()
             await refreshTags()
             search.run()
         } catch {
+            isOpeningCatalog = false
             errorMessage = "无法打开索引数据库：\(error)"
         }
     }

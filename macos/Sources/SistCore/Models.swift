@@ -132,6 +132,9 @@ public struct ParseResult: Sendable {
     /// The full-text columns, prepared ahead of the write so the single writer does not spend
     /// its time rewriting text (see SearchText.indexedText)
     public var indexedText: IndexedText?
+    /// The content as the catalog stores it, compressed ahead of the write for the same reason
+    /// (see ContentCodec in SistStore). nil when not prepared, or too short to be compressed.
+    public var compressedContent: Data?
 
     public init(document: ParsedDocument, thumbnails: [Data] = []) {
         self.document = document

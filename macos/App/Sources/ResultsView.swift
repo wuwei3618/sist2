@@ -8,7 +8,13 @@ struct ResultsView: View {
 
     var body: some View {
         Group {
-            if model.sources.isEmpty {
+            if model.catalog == nil {
+                if model.isOpeningCatalog {
+                    ProgressView("正在打开索引…")
+                } else {
+                    ContentUnavailableView("无法打开索引", systemImage: "exclamationmark.triangle")
+                }
+            } else if model.sources.isEmpty {
                 ContentUnavailableView {
                     Label("还没有建立索引的文件夹", systemImage: "folder.badge.plus")
                 } description: {

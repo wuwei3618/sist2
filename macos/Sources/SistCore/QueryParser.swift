@@ -67,9 +67,9 @@ public enum QueryParser {
 
     static func ftsPhrase(for term: Term) -> String? {
         guard SearchText.containsTokenCharacter(term.text) else { return nil }
-        let (text, cjkPrefix) = SearchText.queryPhrase(term.text)
+        let text = SearchText.queryPhrase(term.text)
         let quoted = "\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-        let phrase = quoted + (term.prefix || cjkPrefix ? "*" : "")
+        let phrase = quoted + (term.prefix ? "*" : "")
         if let column = term.column {
             return "\(column) : \(phrase)"
         }

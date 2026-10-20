@@ -86,7 +86,7 @@ enum MetadataLabel {
         MetaKey.exifLens: "镜头", MetaKey.exifDescription: "描述", MetaKey.gpsLatitude: "纬度",
         MetaKey.gpsLongitude: "经度", MetaKey.archiveMembers: "成员数", MetaKey.publisher: "出版社",
         MetaKey.keywords: "关键词", MetaKey.language: "语言", MetaKey.emailFrom: "发件人", MetaKey.emailTo: "收件人",
-        MetaKey.emailCc: "抄送", MetaKey.emailDate: "发送时间",
+        MetaKey.emailCc: "抄送", MetaKey.emailDate: "发送时间", MetaKey.imageLabels: "图片内容",
     ]
 
     static func name(for key: String) -> String {

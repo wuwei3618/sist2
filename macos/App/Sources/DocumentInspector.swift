@@ -86,6 +86,14 @@ struct DocumentInspector: View {
                     Button("在 Finder 中显示") { document.revealInFinder() }
                 }
                 .controlSize(.small)
+                if model.semanticEnabled && document.category == .image {
+                    Button {
+                        search.findSimilar(to: document)
+                    } label: {
+                        Label("查找相似图片", systemImage: "photo.on.rectangle")
+                    }
+                    .controlSize(.small)
+                }
 
                 if let parent {
                     Button {

@@ -39,6 +39,9 @@ final class AppModel {
 
     /// The background agent is running and does the scanning
     private(set) var agentRunning = false
+    /// Semantic search is on (a catalog setting, shared with the agent)
+    private(set) var semanticEnabled = false
+    private(set) var semanticStatus: SemanticStatus?
     /// The login item's registration
     private(set) var agentStatus: SMAppService.Status = .notRegistered
 
@@ -93,6 +96,7 @@ final class AppModel {
             await refreshSources()
             await refreshTags()
             await search.loadSavedSearches()
+            await refreshSemanticStatus()
             search.run()
             listenToAgent()
             refreshAgentStatus()
@@ -245,6 +249,38 @@ final class AppModel {
             AgentLink.post(AgentLink.sourcesChanged)
         } else {
             await keeper?.reloadSources()
+        }
+    }
+
+    // MARK: Semantic search
+
+    func refreshSemanticStatus() async {
+        guard let catalog else { return }
+        semanticEnabled = await catalog.isSemanticSearchEnabled()
+        semanticStatus = try? await catalog.semanticStatus()
+    }
+
+    /// Turns semantic search on (documents are analysed in the background, here or by the agent)
+    /// or off (the vectors already computed are kept)
+    func setSemanticSearch(_ on: Bool) {
+        guard let catalog else { return }
+        Task {
+            do {
+                try await catalog.setSetting(Catalog.semanticSearchSetting, on ? "1" : nil)
+            } catch {
+                errorMessage = "\(error)"
+            }
+            semanticEnabled = on
+            if !on {
+                search.semanticSearch = false
+                search.clearSimilar()
+            }
+            if agentRunning {
+                AgentLink.post(AgentLink.sourcesChanged)
+            } else {
+                keeper?.updateSemanticIndex()
+            }
+            await refreshSemanticStatus()
         }
     }
 

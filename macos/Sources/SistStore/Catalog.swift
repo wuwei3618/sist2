@@ -157,6 +157,13 @@ public final class Catalog: Sendable {
 
     // MARK: Documents
 
+    /// The document at a path (a file, or an archive member as archive#/member)
+    public func documentId(path: String) async throws -> Int64? {
+        try await pool.read { db in
+            try Int64.fetchOne(db, sql: "SELECT id FROM document WHERE path = ? ORDER BY sourceId LIMIT 1", arguments: [path])
+        }
+    }
+
     public func document(id: Int64) async throws -> DocumentDetail? {
         try await pool.read { db in
             guard let row = try Row.fetchOne(

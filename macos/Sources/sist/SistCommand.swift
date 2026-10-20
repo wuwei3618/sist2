@@ -16,7 +16,8 @@ struct SistCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "sist",
         abstract: "Index folders and search them. Shares its catalog with the Sist app.",
-        subcommands: [Scan.self, Search.self, Folders.self, Extract.self, Sources.self, Remove.self, Stats.self])
+        subcommands: [Scan.self, Search.self, Similar.self, Folders.self, Extract.self, Sources.self, Remove.self,
+                      Stats.self, Semantic.self])
 }
 
 struct CatalogOptions: ParsableArguments {
@@ -177,9 +178,19 @@ struct Search: AsyncParsableCommand {
     @Flag(help: "Print JSON")
     var json = false
 
+    @Flag(help: "Also match by meaning (needs `sist semantic --on` and an up-to-date semantic index)")
+    var semantic = false
+
+    @Flag(help: "Match by meaning only")
+    var semanticOnly = false
+
     func run() async throws {
         let catalog = try catalog.open()
         var search = SearchQuery(text: query.joined(separator: " "))
+        if semantic || semanticOnly {
+            search.semantic = try queryEmbedding(search.text)
+            search.semanticOnly = semanticOnly
+        }
         search.limit = limit
         search.categories = Set(kind.compactMap(MimeCategory.init(rawValue:)))
         search.pathPrefix = path.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath).standardizedFileURL.path }
@@ -189,47 +200,149 @@ struct Search: AsyncParsableCommand {
         search.modifiedAfter = try after.map(parseDay)
         search.modifiedBefore = try before.map(parseDay)
         let results = try await catalog.search(search)
+        try await printResults(results, query: search, catalog: catalog, json: json)
+    }
+}
 
-        if json {
-            let hits: [[String: Any]] = results.hits.map { hit in
-                var object: [String: Any] = [
-                    "id": hit.document.id, "path": hit.document.path, "name": hit.document.name,
-                    "size": hit.document.size, "mtime": hit.document.mtime, "category": hit.document.category.rawValue,
-                ]
-                object["mime"] = hit.document.mime
-                object["title"] = hit.document.title
-                object["excerpt"] = hit.excerpt?.plainText
-                return object
+/// The query's vector, with the model the documents' passages were embedded with
+func queryEmbedding(_ text: String) throws -> Embedding {
+    guard let embedder = SemanticModels.textEmbedder() else {
+        throw ValidationError("Semantic search needs macOS")
+    }
+    do {
+        guard let embedding = try embedder.embed(text) else {
+            throw ValidationError("No embedding model for the language of \"\(text)\"")
+        }
+        return embedding
+    } catch EmbeddingError.modelUnavailable {
+        throw ValidationError("The embedding model for this language is being downloaded; try again later")
+    }
+}
+
+func printResults(_ results: SearchResults, query search: SearchQuery, catalog: Catalog, json: Bool) async throws {
+    if json {
+        let hits: [[String: Any]] = results.hits.map { hit in
+            var object: [String: Any] = [
+                "id": hit.document.id, "path": hit.document.path, "name": hit.document.name,
+                "size": hit.document.size, "mtime": hit.document.mtime, "category": hit.document.category.rawValue,
+            ]
+            object["mime"] = hit.document.mime
+            object["title"] = hit.document.title
+            object["excerpt"] = hit.excerpt?.plainText
+            return object
+        }
+        let data = try JSONSerialization.data(
+            withJSONObject: ["total": results.total, "hits": hits], options: [.prettyPrinted, .sortedKeys])
+        print(String(decoding: data, as: UTF8.self))
+        return
+    }
+
+    let color = isatty(STDOUT_FILENO) != 0
+    func render(_ snippet: Snippet) -> String {
+        snippet.segments.map { segment in
+            segment.highlighted && color ? "\u{1B}[1;33m\(segment.text)\u{1B}[0m" : segment.text
+        }.joined()
+    }
+
+    for hit in results.hits {
+        let document = hit.document
+        let size = ByteCountFormatter.string(fromByteCount: document.size, countStyle: .file)
+        let date = ISO8601DateFormatter.string(from: document.modificationDate, timeZone: .current,
+                                               formatOptions: [.withFullDate])
+        let similarity = hit.similarity.map { String(format: ", similarity %.2f", $0) } ?? ""
+        print(render(Highlighter.highlight(document.name, terms: results.highlightTerms))
+              + "  [\(document.category.rawValue), \(size), \(date)\(similarity)]")
+        print("  \(document.path)")
+        // A semantic match shows the passage that matched, highlighted or not
+        if let excerpt = hit.excerpt, excerpt.hasHighlights || hit.similarity != nil {
+            print("  " + render(excerpt))
+        }
+    }
+    print("\(results.total) results in \(String(format: "%.0f", results.elapsed * 1000)) ms")
+    if results.total == 0, search.semantic == nil, let suggestion = try await catalog.spellingSuggestion(for: search.text) {
+        print("Did you mean: \(suggestion)")
+    }
+}
+
+struct Similar: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Images that look like an indexed image (needs `sist semantic --on`).")
+
+    @OptionGroup var catalog: CatalogOptions
+
+    @Argument(help: "An indexed image, or an image inside an archive (archive.zip#/photo.jpg)")
+    var path: String
+
+    @Option(name: .shortAndLong, help: "Maximum results")
+    var limit = 20
+
+    @Flag(help: "Print JSON")
+    var json = false
+
+    func run() async throws {
+        let catalog = try catalog.open()
+        let path = path.contains("#/") ? path : URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
+        guard let id = try await catalog.documentId(path: path) else {
+            throw ValidationError("\(path) is not in the catalog")
+        }
+        guard let embedding = try await catalog.embedding(documentId: id, kind: .image) else {
+            throw ValidationError("\(path) has not been analysed: run `sist semantic --update`")
+        }
+        var query = SearchQuery()
+        query.semantic = embedding
+        query.semanticOnly = true
+        query.excludedDocument = id
+        query.limit = limit
+        try await printResults(try await catalog.search(query), query: query, catalog: catalog, json: json)
+    }
+}
+
+struct Semantic: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Semantic search: turn it on or off, show its progress, or bring it up to date.",
+        discussion: """
+            With semantic search on, passages of each document's text get vectors from the system's \
+            language models, and images a feature print and labels (macOS). The app and its background \
+            agent keep this up to date after each scan; --update does it now.
+            """)
+
+    @OptionGroup var catalog: CatalogOptions
+
+    @Flag(name: .customLong("on"), help: "Turn semantic search on")
+    var turnOn = false
+
+    @Flag(name: .customLong("off"), help: "Turn it off (vectors already computed stay)")
+    var turnOff = false
+
+    @Flag(help: "Analyse the documents not analysed yet")
+    var update = false
+
+    func run() async throws {
+        let catalog = try catalog.open()
+        if turnOn || turnOff {
+            try await catalog.setSetting(Catalog.semanticSearchSetting, turnOn ? "1" : nil)
+        }
+        if update {
+            guard await catalog.isSemanticSearchEnabled() else {
+                throw ValidationError("Semantic search is off: sist semantic --on")
             }
-            let data = try JSONSerialization.data(
-                withJSONObject: ["total": results.total, "hits": hits], options: [.prettyPrinted, .sortedKeys])
-            print(String(decoding: data, as: UTF8.self))
-            return
-        }
-
-        let color = isatty(STDOUT_FILENO) != 0
-        func render(_ snippet: Snippet) -> String {
-            snippet.segments.map { segment in
-                segment.highlighted && color ? "\u{1B}[1;33m\(segment.text)\u{1B}[0m" : segment.text
-            }.joined()
-        }
-
-        for hit in results.hits {
-            let document = hit.document
-            let size = ByteCountFormatter.string(fromByteCount: document.size, countStyle: .file)
-            let date = ISO8601DateFormatter.string(from: document.modificationDate, timeZone: .current,
-                                                   formatOptions: [.withFullDate])
-            print(render(Highlighter.highlight(document.name, terms: results.highlightTerms))
-                  + "  [\(document.category.rawValue), \(size), \(date)]")
-            print("  \(document.path)")
-            if let excerpt = hit.excerpt, excerpt.hasHighlights {
-                print("  " + render(excerpt))
+            let text = SemanticModels.textEmbedder()
+            let images = SemanticModels.imageAnalyzer()
+            guard text != nil || images != nil else {
+                throw ValidationError("Semantic search needs macOS")
             }
+            let done = try await SemanticIndexer(catalog: catalog, text: text, images: images).run { done, pending in
+                FileHandle.standardError.write(Data("\r\(done)/\(pending)".utf8))
+            }
+            FileHandle.standardError.write(Data("\n".utf8))
+            print("Analysed \(done) documents")
         }
-        print("\(results.total) results in \(String(format: "%.0f", results.elapsed * 1000)) ms")
-        if results.total == 0, let suggestion = try await catalog.spellingSuggestion(for: search.text) {
-            print("Did you mean: \(suggestion)")
+        let status = try await catalog.semanticStatus()
+        print("Semantic search: \(await catalog.isSemanticSearchEnabled() ? "on" : "off")")
+        for kind in EmbeddingKind.allCases {
+            print("  \(kind.rawValue): \(status.indexed[kind] ?? 0) analysed, \(status.pending[kind] ?? 0) pending")
         }
+        print("  vectors: \(status.vectors)")
     }
 }
 

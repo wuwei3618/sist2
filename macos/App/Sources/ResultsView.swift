@@ -137,11 +137,19 @@ struct ResultRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if let excerpt = hit.excerpt, excerpt.hasHighlights {
-                    Text(excerpt.attributed)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                // A semantic match shows the passage that matched, highlighted or not
+                if let excerpt = hit.excerpt, excerpt.hasHighlights || hit.similarity != nil {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        if hit.similarity != nil {
+                            Image(systemName: "sparkles")
+                                .font(.caption2)
+                                .foregroundStyle(.tint)
+                        }
+                        Text(excerpt.attributed)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 }
             }
             Spacer(minLength: 8)

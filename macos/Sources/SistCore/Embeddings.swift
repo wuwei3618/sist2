@@ -15,8 +15,14 @@ public struct Embedding: Sendable, Hashable {
 /// Turns text into vectors whose closeness follows meaning (sist2's text embeddings). The macOS
 /// one uses NaturalLanguage's contextual embeddings; tests use a hashing one.
 public protocol TextEmbedder: Sendable {
-    /// nil when the text cannot be embedded (no model for its language, no words)
+    /// nil when the text cannot be embedded (no model for its language, no words). Throws
+    /// `EmbeddingError.modelUnavailable` when the model exists but is not there yet.
     func embed(_ text: String) throws -> Embedding?
+}
+
+public enum EmbeddingError: Error {
+    /// Being downloaded: try again later
+    case modelUnavailable
 }
 
 /// What is learnt from an image: a feature print to find similar images, and labels saying what
@@ -52,7 +58,7 @@ public enum Chunker {
             guard !rest.isEmpty else { break }
             guard let hardEnd = rest.index(rest.startIndex, offsetBy: size, limitedBy: rest.endIndex),
                   hardEnd < rest.endIndex else {
-                chunks.append(String(rest))
+                chunks.append(String(rest).trimmingCharacters(in: .whitespacesAndNewlines))
                 break
             }
             let half = rest.index(rest.startIndex, offsetBy: size / 2)

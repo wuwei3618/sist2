@@ -301,7 +301,19 @@ SQLite 自带的 `unicode61` 分词器只按分隔符切分，一整段中文会
 - **文件夹与路径补全**：输入时，搜索框下列出名字包含正在输入的词的文件夹（按文件数排序）；输入以 `/` 或 `~` 开头时按路径前缀补全。选中即把搜索限定到该文件夹
 - **保存的搜索**：关键词连同全部筛选（源、文件夹、类型、大小、时间、标签、排序）存进 catalog 的 `saved_search` 表，侧边栏列出，可重命名、删除；时间预设按名字保存（“最近 7 天”在每次使用时重新计算）。搜索框输入时也会列出名字匹配的保存的搜索
 
-### 8.3 查询语法
+### 8.3 语义搜索（对应 sist2 的 embeddings）
+
+默认关闭（设置 › 通用，或 `sist semantic --on`），因为分析要花时间。开启后：
+
+- **文本**：正文按约 400 字切成段落（在换行、句末处断开，每个文档最多 8 段，即开头约 3000 字；`Chunker` 是确定的，搜索时用同样的切法找出命中的段落做摘要），每段用 NaturalLanguage 的 `NLContextualEmbedding`（macOS 14）得到各 token 的向量，取平均作为段落向量。系统按文字体系提供不同的模型（拉丁、西里尔、中日韩……），首次用到时自动下载；不同模型的向量不在同一个空间，所以向量带着模型标识存储，中文查询只和中文段落比较
+- **图片**：用已存的缩略图跑 Vision 的 `VNGenerateImageFeaturePrintRequest`（特征向量，用于“查找相似图片”）和 `VNClassifyImageRequest`（置信度 0.3 以上的前 8 个内容标签，如 beach、cat、document）。标签写进文档的元数据（详情页“图片内容”）和全文索引行，所以搜“beach”能找到海滩照片；标签是英文的
+- **何时计算**：与解析分开，由 `SemanticIndexer` 在每次扫描结束后在后台补齐（App 或后台服务里的 `IndexKeeper` 负责），也可以 `sist semantic --update`。`embedding_status` 记录每个文档分析时的解析版本（scan id），文档重新解析后自动重新分析；模型还在下载时文档保持待处理，下次再试
+- **存储**：`embedding` 表，每段一行，向量归一化后量化为 8 位（每个向量一个缩放系数），空间是 32 位浮点的四分之一，相似度几乎不变
+- **检索**：线性扫描同一模型的全部向量（与 sist2 的 SQLite 后端一致），每个文档取最相似的段落，留前 500 个；同时取全文检索的前 500 个，用倒数排名融合（RRF，k=60）合成一个排序——两种分数不在同一尺度，排名融合不需要校准。筛选条件对两路同样生效；按时间、大小、名称排序时对融合后的结果排序。摘要显示命中的那一段
+- **界面**：工具栏“按意思搜索”开关；图片详情里“查找相似图片”（结果上方显示“与 xxx 相似”的筛选标签）；命令行 `sist search --semantic`、`--semantic-only`，`sist similar 图片路径`
+- **测试**：Linux 上没有这些系统模型，测试用一个确定性的哈希嵌入器和假图片分析器覆盖切段、量化、存储、补齐、过期重算、融合检索、相似图片和标签检索；NaturalLanguage/Vision 部分只在 macOS 上编译
+
+### 8.4 查询语法
 
 查询由 `QueryParser` 转成 FTS5 表达式，所有词都加引号转义，任何输入都不会产生 FTS5 语法错误：
 
@@ -314,7 +326,7 @@ photo*              前缀
 name:报告           只在某一列搜：name、title、content、path
 ```
 
-### 8.4 排序、高亮、分面
+### 8.5 排序、高亮、分面
 
 - 相关度：FTS5 `rank`，列权重与 sist2 相同（文件名 8、标题 8、正文 3、路径 5）；无关键词时按修改时间
 - 其他排序：修改时间、大小、名称
@@ -406,6 +418,9 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 | 极宽泛的查询（命中大部分文档）要按相关度给全部命中打分，10 万文档约 0.2 秒，百万级约 2 秒 | bm25 排序需要遍历全部命中 | 命中过多时改按时间排序或只对前 N 个打分 |
 | 中文按单字索引，常用字组成的词要读很长的位置列表：10 万篇大文档约 0.1–0.2 秒 | 换来索引减半、写入快 4 倍、单字搜索快 10 倍（第 8.1 节） | 规模再大时可以只为高频字对加二元组 |
 | 进程内模式无法中止卡住的解析 | 线程不能被安全杀死 | 正式包始终使用 sist-worker |
+| 语义搜索按文字体系分模型，中文查询找不到意思相同的英文段落 | 系统的上下文向量模型是按文字体系分开的 | 换成多语言句向量模型（需随 App 分发） |
+| 图片内容标签是英文的 | Vision 的分类体系只有英文标识 | 为常见标签加中文对照 |
+| 语义检索是线性扫描：几十万段落约几十到一百多毫秒 | 先求简单可靠 | 规模更大时换 HNSW |
 | 拼写建议只纠正拉丁字母的词，且假定首字母没错 | 中文按单字索引，无所谓拼写；首字母相同的词才进候选，避免扫全部词表 | 按需 |
 
 ---
@@ -482,9 +497,11 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 - [x] 访达标签与应用标签双向同步
 
 **阶段三（语义搜索，对应 sist2 的 embeddings）**
-- [ ] 文本：`NLContextualEmbedding` 或 Core ML 版多语言句向量，按段落分块（对应 sist2 的 per-chunk embeddings）
-- [ ] 图片：Vision `VNGenerateImageFeaturePrintRequest` 以图搜图；Core ML 版 CLIP 以文搜图
-- [ ] 向量存储：先线性扫描（与 sist2 SQLite 后端一致），规模大时换 HNSW
+- [x] 文本：`NLContextualEmbedding`，按段落分块（对应 sist2 的 per-chunk embeddings），与全文检索融合排序
+- [x] 图片：Vision 特征向量以图搜图；Vision 分类标签让关键词能搜到图片
+- [ ] 以文搜图的 CLIP（需要随 App 分发一个 Core ML 模型，几百 MB）
+- [x] 向量存储：8 位量化 + 线性扫描（与 sist2 SQLite 后端一致）
+- [ ] 规模大时换 HNSW
 
 ---
 
@@ -492,7 +509,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 | 部分 | 验证方式 |
 |---|---|
-| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，115 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
+| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，121 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
 | PDFKit/ImageIO/Vision/AVFoundation/CoreText/QuickLook 解析器、SwiftUI App | macOS 15 runner 上编译通过，`make-app.sh` 打出的 arm64 + x86_64 通用 `Sist.app` 通过 `codesign --verify --strict` |
 | 界面交互、各 Apple 框架解析器对真实文件的效果 | 尚未验证：CI 只编译不运行界面，也没有 PDF/图片/音视频的样例文件测试。需要在 Mac 上实际走查 |
 

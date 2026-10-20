@@ -117,7 +117,7 @@ package.targets += [
     // notifications between them
     .target(
         name: "SistService",
-        dependencies: ["SistCore", "SistStore", "SistScan"],
+        dependencies: ["SistCore", "SistStore", "SistScan", "SistExtractors"],
         path: "App/Service",
         swiftSettings: [.swiftLanguageMode(.v5)]
     ),

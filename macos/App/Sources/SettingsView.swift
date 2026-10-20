@@ -48,9 +48,38 @@ private struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             BackgroundAgentSection()
+            SemanticSearchSection()
         }
         .formStyle(.grouped)
         .onAppear { model.refreshAgentStatus() }
+    }
+}
+
+/// Semantic search: vectors for passages of text and for images, computed in the background
+private struct SemanticSearchSection: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Section("语义搜索（实验）") {
+            Toggle("按意思搜索文本，查找相似图片", isOn: Binding(
+                get: { model.semanticEnabled },
+                set: { model.setSemanticSearch($0) }))
+            if model.semanticEnabled, let status = model.semanticStatus {
+                Text("文本：已分析 \(status.indexed[.text] ?? 0)，待处理 \(status.pending[.text] ?? 0)；"
+                     + "图片：已分析 \(status.indexed[.image] ?? 0)，待处理 \(status.pending[.image] ?? 0)")
+                    .font(.caption)
+                    .monospacedDigit()
+            }
+            Text("开启后，正文按段落由系统的语言模型（首次使用时自动下载）转成向量，图片提取特征和内容标签（英文）。在后台进行，不拖慢扫描。搜索时打开工具栏的“按意思搜索”，或在图片的详情里点“查找相似图片”。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .task(id: model.semanticEnabled) {
+            while !Task.isCancelled {
+                await model.refreshSemanticStatus()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
     }
 }
 

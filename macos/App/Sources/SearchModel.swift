@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SistCore
+import SistExtractors
 import SistStore
 
 enum DisplayMode: String, CaseIterable {
@@ -201,6 +202,16 @@ final class SearchModel {
     /// Shows the dialog naming the current search
     var isSavingSearch = false
 
+    /// Also match by meaning: the text is embedded and compared with the passages' vectors
+    var semanticSearch = false {
+        didSet { if semanticSearch != oldValue { run() } }
+    }
+    /// Images that look like this one, instead of a text search
+    private(set) var similarTo: DocumentSummary?
+    private let textEmbedder = SemanticModels.textEmbedder()
+    /// The vector of the current search, for its further pages
+    @ObservationIgnored private var currentEmbedding: Embedding?
+
     @ObservationIgnored private var searchTask: Task<Void, Never>?
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
 
@@ -213,7 +224,32 @@ final class SearchModel {
 
     var hasFilters: Bool {
         !categories.isEmpty || !sourceIds.isEmpty || folder != nil || sizeFilter != .any || dateFilter != .any
-            || !tags.isEmpty
+            || !tags.isEmpty || similarTo != nil
+    }
+
+    func findSimilar(to document: DocumentSummary) {
+        similarTo = document
+        text = ""
+        run()
+    }
+
+    func clearSimilar() {
+        guard similarTo != nil else { return }
+        similarTo = nil
+        run()
+    }
+
+    /// The vector to search with, if any: the image's for a look-alike search, the text's in
+    /// semantic mode (nil while its language model is being downloaded)
+    private func embedding(for query: SearchQuery, catalog: Catalog) async -> (Embedding, only: Bool, excluded: Int64?)? {
+        if let similarTo {
+            guard let vector = try? await catalog.embedding(documentId: similarTo.id, kind: .image) else { return nil }
+            return (vector, true, similarTo.id)
+        }
+        guard semanticSearch, let textEmbedder, !query.text.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        let text = query.text
+        guard let vector = await Task.detached(operation: { try? textEmbedder.embed(text) }).value else { return nil }
+        return (vector, false, nil)
     }
 
     func scheduleSearch() {
@@ -334,10 +370,17 @@ final class SearchModel {
     func run() {
         searchTask?.cancel()
         guard let catalog else { return }
-        let query = makeQuery(offset: 0)
+        let plainQuery = makeQuery(offset: 0)
         isSearching = true
         searchTask = Task { [weak self] in
+            var query = plainQuery
             do {
+                if let self, let semantic = await self.embedding(for: query, catalog: catalog) {
+                    query.semantic = semantic.0
+                    query.semanticOnly = semantic.only
+                    query.excludedDocument = semantic.excluded
+                }
+                self?.currentEmbedding = query.semantic
                 let results = try await catalog.search(query)
                 guard !Task.isCancelled, let self else { return }
                 self.hits = results.hits
@@ -370,6 +413,11 @@ final class SearchModel {
         isLoadingMore = true
         var query = makeQuery(offset: hits.count)
         query.countCategories = false
+        if let currentEmbedding {
+            query.semantic = currentEmbedding
+            query.semanticOnly = similarTo != nil
+            query.excludedDocument = similarTo?.id
+        }
         Task { [weak self] in
             defer { self?.isLoadingMore = false }
             guard let results = try? await catalog.search(query), let self else { return }
@@ -380,6 +428,7 @@ final class SearchModel {
     }
 
     func clearFilters() {
+        similarTo = nil
         categories = []
         sourceIds = []
         folder = nil

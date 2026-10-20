@@ -49,6 +49,14 @@ struct ContentView: View {
 
                 FilterButton()
 
+                if model.semanticEnabled {
+                    Toggle(isOn: $search.semanticSearch) {
+                        Label("按意思搜索", systemImage: "sparkles")
+                    }
+                    .toggleStyle(.button)
+                    .help("同时按意思匹配：找到说法不同、意思相近的段落")
+                }
+
                 Button {
                     search.isSavingSearch = true
                 } label: {
@@ -195,6 +203,9 @@ struct ActiveFilters: View {
                         FilterChip(title: info.source.name, symbol: "externaldrive") {
                             search.sourceIds.remove(info.id)
                         }
+                    }
+                    if let similar = search.similarTo {
+                        FilterChip(title: "与“\(similar.name)”相似", symbol: "photo.on.rectangle") { search.clearSimilar() }
                     }
                     if let folder = search.folder {
                         FilterChip(title: folder.name, symbol: "folder") { search.folder = nil }

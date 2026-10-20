@@ -54,6 +54,9 @@ struct ContentView: View {
             }
         }
         .quickLookPreview($search.previewURL)
+        .onAppear {
+            model.openMainWindow = { openWindow(id: "main") }
+        }
         .overlay(alignment: .bottom) {
             if let message = model.errorMessage ?? search.errorMessage {
                 ErrorBanner(message: message) {

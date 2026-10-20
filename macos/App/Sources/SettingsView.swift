@@ -6,6 +6,8 @@ import SistStore
 struct SettingsView: View {
     var body: some View {
         TabView {
+            GeneralSettingsView()
+                .tabItem { Label("通用", systemImage: "gearshape") }
             DefaultOptionsView()
                 .tabItem { Label("扫描", systemImage: "doc.text.magnifyingglass") }
             SourcesSettingsView()
@@ -14,6 +16,39 @@ struct SettingsView: View {
                 .tabItem { Label("权限", systemImage: "lock.shield") }
         }
         .frame(width: 600, height: 560)
+    }
+}
+
+private struct GeneralSettingsView: View {
+    @Environment(AppModel.self) private var model
+    @AppStorage(AppModel.showMenuBarItemKey) private var showMenuBarItem = true
+
+    var body: some View {
+        @Bindable var model = model
+        Form {
+            Section("快速搜索") {
+                Picker("快捷键", selection: $model.quickSearchShortcut) {
+                    ForEach(QuickSearchShortcut.allCases) { shortcut in
+                        Text(shortcut.displayName).tag(shortcut)
+                    }
+                }
+                if model.quickSearchShortcutTaken {
+                    Label("这个快捷键已被其他应用占用，请换一个", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Text("在任何应用中按下快捷键，屏幕上方会出现搜索框：↑↓ 选择，↩ 打开，⌘↩ 在 Finder 中显示，⇧↩ 在主窗口中查看全部结果。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("在菜单栏中显示", isOn: $showMenuBarItem)
+                Text("显示时，关闭主窗口后 Sist 继续在后台运行：快捷键随时可用，文件夹有变化时继续更新索引。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

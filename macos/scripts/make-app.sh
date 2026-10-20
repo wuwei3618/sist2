@@ -46,6 +46,17 @@ done
 sed -e "s/__BUNDLE_ID__/$BUNDLE_ID/" -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" \
     App/Info.plist > "$APP/Contents/Info.plist"
 
+# The icon, from App/Icon/AppIcon.png (drawn by scripts/make-icon.py) at the sizes an .icns holds
+ICONSET="build/AppIcon.iconset"
+rm -rf "$ICONSET"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+    sips -z "$size" "$size" App/Icon/AppIcon.png --out "$ICONSET/icon_${size}x${size}.png" > /dev/null
+    sips -z $((size * 2)) $((size * 2)) App/Icon/AppIcon.png --out "$ICONSET/icon_${size}x${size}@2x.png" > /dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$ICONSET"
+
 # Hardened runtime is required for notarization. Nested executables are signed before the app.
 SIGN_FLAGS=(--force --options runtime --sign "$SIGN_IDENTITY")
 if [ "$SIGN_IDENTITY" != "-" ]; then

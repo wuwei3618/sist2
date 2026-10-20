@@ -18,6 +18,8 @@ swift run SistApp          # 直接运行界面（找不到 sist-worker 时退�
 
 或者用 Xcode 打开 `macos/Package.swift`，选择 `SistApp` scheme 运行。调试界面时建议先 `swift build --product sist-worker`，这样扫描会走子进程。
 
+在任何应用中按 **⌥空格** 弹出快速搜索面板（可在设置中更换快捷键）；菜单栏图标里也有快速搜索、扫描和设置。
+
 打包成可分发的 `.app`：
 
 ```bash
@@ -59,13 +61,16 @@ macos/
 ├── Package.swift
 ├── Sources/
 │   ├── SistCore/         模型、MIME、中文单字索引、查询解析、高亮、遍历、忽略规则、worker 协议
-│   ├── SistStore/        catalog 数据库：结构、增量写入、搜索、统计
+│   ├── SistStore/        catalog 数据库：结构、增量写入、搜索、统计、正文压缩
+│   ├── CArchive/         libarchive 声明（macOS 自带库但没有头文件）
+│   ├── CSistZlib/        zlib 声明
 │   ├── SistExtractors/   各格式解析器；Apple/ 下为仅 macOS 的 PDFKit、ImageIO、Vision、AVFoundation…
 │   ├── SistScan/         扫描调度、进程内/子进程解析池
 │   ├── sist-worker/      解析子进程
 │   └── sist/             命令行工具
 ├── App/
-│   ├── Sources/          SwiftUI 应用
+│   ├── Sources/          SwiftUI 应用（主窗口、快速搜索面板、菜单栏）
+│   ├── Icon/AppIcon.png  应用图标（scripts/make-icon.py 生成）
 │   └── Info.plist        打包用（用途说明等）
 ├── Tests/
 ├── scripts/make-app.sh   构建、签名、公证

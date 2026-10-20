@@ -307,7 +307,14 @@ name:报告           只在某一列搜：name、title、content、path
 - 工具栏：搜索框（输入防抖 180 ms）、显示方式、排序、筛选（大小预设；修改时间预设 + 自定义起止日期）、统计窗口
 - 右键菜单：源可以“立即扫描”“重建索引”；文件夹可以“重新扫描此文件夹”
 - 统计窗口（Swift Charts）：按类型占用空间、大小分布、修改年份、最大的文件夹、常见格式
-- 设置：默认扫描选项、每个文件夹的选项（OCR、语言、缩略图、正文上限、压缩包模式、排除规则、并发、超时；改动需要重新解析全部文件时会提示）、“重建索引”、权限说明
+- 设置：快速搜索的快捷键和菜单栏图标、默认扫描选项、每个文件夹的选项（OCR、语言、缩略图、正文上限、压缩包模式、排除规则、并发、超时；改动需要重新解析全部文件时会提示）、“重建索引”、权限说明
+- 快速搜索面板（类似 Spotlight / Alfred）：任何应用中按快捷键（默认 ⌥空格，可选 ⌃⌥空格、⇧⌘空格；⌘空格是 Spotlight 的，⌃空格是切换输入法的）在鼠标所在屏幕上方弹出搜索框，前 30 个结果随输入更新。↑↓ 选择，↩ 打开，⌘↩ 在 Finder 中显示，⇧↩ 把查询带到主窗口看全部结果，Esc 或点别处关闭
+  - 快捷键用 Carbon 的 `RegisterEventHotKey`：不需要辅助功能权限，按键也不会传给前台应用；被其他应用占用时设置里会提示
+  - 面板是 `nonactivatingPanel`：接收键盘输入但不激活 Sist，原来的窗口仍在前面；打开文件后自动消失
+  - 方向键和回车由本地事件监视器处理，但输入法正在组字时（拼音、假名）一律交给输入法：回车上屏、方向键选词、Esc 取消，不会误打开文件
+- 菜单栏图标：快速搜索、打开主窗口、扫描状态与“扫描全部”、设置、退出。显示菜单栏图标时，关闭主窗口后应用继续运行（快捷键可用、文件夹监视继续更新索引）；隐藏时关闭主窗口即退出
+- 应用图标由 `scripts/make-icon.py` 画出 1024 px 的 `App/Icon/AppIcon.png`，`make-app.sh` 用 `sips` 和 `iconutil` 生成 `AppIcon.icns`
+- 打开旧版本的 catalog 可能要迁移（第 8.1 节），在后台线程进行，界面显示“正在打开索引…”
 
 ---
 
@@ -414,7 +421,8 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 - [x] 引擎：遍历、增量、worker 池、catalog、CJK 搜索、统计、CLI
 - [x] 解析器：文本、HTML、JSON、Office、EPUB、ZIP、PDF、图片 + OCR、音视频、字体、RTF/DOC/ODT、QuickLook 缩略图
 - [x] SwiftUI：三栏搜索界面、筛选、详情、标签、统计、设置、FSEvents 自动更新
-- [ ] 在 Mac 上完整走查界面，补应用图标
+- [ ] 在 Mac 上完整走查界面
+- [x] 应用图标
 - [x] zip 中文文件名编码修正
 - [x] libarchive：tar/gz/bz2/xz/zstd/7z/rar/iso/cab，cbr 封面
 - [x] 旧版 Office：xls、ppt
@@ -423,7 +431,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 - [x] 解析相关的设置改变后自动重建；手动重建索引
 - [x] FSEvents 只扫描变化的目录
 - [x] 10 万文件基准测试与写入路径优化
-- [ ] 菜单栏常驻 + 全局快捷键唤出搜索面板（类似 Spotlight/Alfred）
+- [x] 菜单栏常驻 + 全局快捷键唤出搜索面板（类似 Spotlight/Alfred）
 
 **阶段二（格式与后台）**
 - [ ] mobi/azw3、mbox/eml MIME 解析、pst

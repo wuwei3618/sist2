@@ -33,9 +33,29 @@ final class AppModel {
         }
     }
 
+    /// Shows the quick search panel from anywhere
+    var quickSearchShortcut: QuickSearchShortcut {
+        didSet {
+            UserDefaults.standard.set(quickSearchShortcut.rawValue, forKey: "quickSearchShortcut")
+            registerShortcut()
+        }
+    }
+    /// Another app holds the shortcut
+    private(set) var quickSearchShortcutTaken = false
+
+    /// UserDefaults key of the menu bar item setting (an @AppStorage in the scene and settings)
+    static let showMenuBarItemKey = "showMenuBarItem"
+    static var showsMenuBarItem: Bool {
+        UserDefaults.standard.object(forKey: showMenuBarItemKey) as? Bool ?? true
+    }
+
+    /// Set by a view that has SwiftUI's openWindow action
+    @ObservationIgnored var openMainWindow: (() -> Void)?
+
     let search = SearchModel()
 
     @ObservationIgnored private var started = false
+    @ObservationIgnored private var quickSearch: QuickSearchController?
     @ObservationIgnored private var scanTasks: [Int64: Task<Void, Never>] = [:]
     @ObservationIgnored private var watchers: [Int64: FileSystemWatcher] = [:]
     @ObservationIgnored private var pendingRescans: [Int64: Task<Void, Never>] = [:]
@@ -47,11 +67,15 @@ final class AppModel {
     init() {
         defaultOptions = Self.loadDefaultOptions()
         watchFolders = UserDefaults.standard.object(forKey: "watchFolders") as? Bool ?? true
+        quickSearchShortcut = UserDefaults.standard.string(forKey: "quickSearchShortcut")
+            .flatMap(QuickSearchShortcut.init(rawValue:)) ?? .optionSpace
     }
 
     func start() async {
         guard !started else { return }
         started = true
+        quickSearch = QuickSearchController(model: self)
+        registerShortcut()
         do {
             // Off the main thread: after an update, opening may migrate a large catalog
             let catalog = try await Task.detached(priority: .userInitiated) {
@@ -245,6 +269,26 @@ final class AppModel {
             let events = self.pendingEvents.removeValue(forKey: id) ?? []
             self.scan(id, scopes: ChangeScopes.scopes(for: events, root: root))
         }
+    }
+
+    // MARK: Windows
+
+    func showMainWindow() {
+        NSApp.activate()
+        if let openMainWindow {
+            openMainWindow()
+        } else {
+            NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    func showQuickSearch() {
+        quickSearch?.show()
+    }
+
+    private func registerShortcut() {
+        guard let quickSearch else { return }
+        quickSearchShortcutTaken = !quickSearch.register(quickSearchShortcut)
     }
 
     // MARK: Opening documents

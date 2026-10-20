@@ -1,17 +1,18 @@
 import CoreServices
 import Foundation
+import SistScan
 
-/// FSEvents on a folder tree. sist2 relies on scheduled rescans; here a change triggers an
-/// incremental rescan, which is cheap since unchanged files are not parsed again.
+/// FSEvents on a folder tree. sist2 relies on scheduled rescans; here the folders that changed
+/// are rescanned incrementally (see ChangeScopes).
 final class FileSystemWatcher {
     private let path: String
     private let ignoredPrefixes: [String]
-    private let onChange: () -> Void
+    private let onChange: ([FileChange]) -> Void
     private let queue = DispatchQueue(label: "sist.fsevents")
     private var stream: FSEventStreamRef?
 
     /// `onChange` runs on a background queue, at most every couple of seconds.
-    init(path: String, ignoring ignoredPrefixes: [String] = [], onChange: @escaping () -> Void) {
+    init(path: String, ignoring ignoredPrefixes: [String] = [], onChange: @escaping ([FileChange]) -> Void) {
         self.path = path
         self.ignoredPrefixes = ignoredPrefixes
         self.onChange = onChange
@@ -26,12 +27,13 @@ final class FileSystemWatcher {
         var context = FSEventStreamContext(
             version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
             retain: nil, release: nil, copyDescription: nil)
-        let callback: FSEventStreamCallback = { _, info, _, eventPaths, _, _ in
+        let callback: FSEventStreamCallback = { _, info, count, eventPaths, eventFlags, _ in
             guard let info else { return }
             let watcher = Unmanaged<FileSystemWatcher>.fromOpaque(info).takeUnretainedValue()
             // kFSEventStreamCreateFlagUseCFTypes: the paths are a CFArray of CFString
             let paths = (Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue() as NSArray) as? [String] ?? []
-            watcher.handle(paths)
+            let flags = (0..<min(count, paths.count)).map { eventFlags[$0] }
+            watcher.handle(paths, flags: flags)
         }
         let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents)
         guard let stream = FSEventStreamCreate(
@@ -50,12 +52,24 @@ final class FileSystemWatcher {
         self.stream = nil
     }
 
-    private func handle(_ paths: [String]) {
-        let relevant = paths.contains { path in
-            !ignoredPrefixes.contains { path.hasPrefix($0) } && !path.contains("/.")
+    private static let lostTrack = FSEventStreamEventFlags(
+        kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
+            | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagRootChanged)
+
+    private func handle(_ paths: [String], flags: [FSEventStreamEventFlags]) {
+        var events: [FileChange] = []
+        for (path, flag) in zip(paths, flags) {
+            let mustRescan = flag & Self.lostTrack != 0
+            if !mustRescan && (ignoredPrefixes.contains { path.hasPrefix($0) } || path.contains("/.")) {
+                continue
+            }
+            events.append(FileChange(
+                path: path,
+                isDirectory: flag & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir) != 0,
+                mustRescanSubtree: mustRescan))
         }
-        if relevant {
-            onChange()
+        if !events.isEmpty {
+            onChange(events)
         }
     }
 }

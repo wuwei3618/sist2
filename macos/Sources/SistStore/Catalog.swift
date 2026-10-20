@@ -183,6 +183,34 @@ public final class Catalog: Sendable {
         }
     }
 
+    // MARK: Folders
+
+    /// The folders directly inside `parent` (the source root for its first level).
+    public func folders(sourceId: Int64, parent: String) async throws -> [FolderInfo] {
+        try await pool.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT f.path, f.name, f.count, f.size,
+                       EXISTS (SELECT 1 FROM folder c WHERE c.sourceId = f.sourceId AND c.parent = f.path) AS sub
+                FROM folder f WHERE f.sourceId = ? AND f.parent = ? ORDER BY f.name COLLATE NOCASE
+                """, arguments: [sourceId, parent]).map { Self.folderInfo($0, sourceId: sourceId) }
+        }
+    }
+
+    public func folder(sourceId: Int64, path: String) async throws -> FolderInfo? {
+        try await pool.read { db in
+            try Row.fetchOne(db, sql: """
+                SELECT f.path, f.name, f.count, f.size,
+                       EXISTS (SELECT 1 FROM folder c WHERE c.sourceId = f.sourceId AND c.parent = f.path) AS sub
+                FROM folder f WHERE f.sourceId = ? AND f.path = ?
+                """, arguments: [sourceId, path]).map { Self.folderInfo($0, sourceId: sourceId) }
+        }
+    }
+
+    static func folderInfo(_ row: Row, sourceId: Int64) -> FolderInfo {
+        FolderInfo(sourceId: sourceId, path: row["path"], name: row["name"], count: row["count"],
+                   size: row["size"], hasSubfolders: row["sub"])
+    }
+
     // MARK: Tags
 
     public func addTag(_ name: String, to documentId: Int64) async throws {

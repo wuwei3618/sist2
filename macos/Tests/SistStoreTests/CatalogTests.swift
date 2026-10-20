@@ -102,7 +102,8 @@ func doc(_ path: String, parent: String? = nil, content: String? = nil, mime: St
             doc("/r/z.zip", mime: "application/zip", mtime: 2),
             doc("/r/z.zip#/m1.txt", parent: "/r/z.zip", content: "member one again"),
         ], source: source, scanId: third)
-        #expect(try await writer.finishScan(sourceId: source.id, scanId: third, counters: ScanCounters()) == 2)
+        // a.txt is deleted; m2 already went when the changed archive was written again
+        #expect(try await writer.finishScan(sourceId: source.id, scanId: third, counters: ScanCounters()) == 1)
 
         let all = try await catalog.search(SearchQuery())
         #expect(Set(all.hits.map(\.document.path)) == ["/r/z.zip", "/r/z.zip#/m1.txt"])
@@ -227,5 +228,105 @@ func doc(_ path: String, parent: String? = nil, content: String? = nil, mime: St
         #expect(stats.totalSize == 2_055_100)
         #expect(Set(stats.topFolders.map(\.label)) == ["docs", "photos"])
         #expect(stats.byYear.map(\.label) == ["2020", "2022", "2023"])
+    }
+}
+
+@Suite struct FolderAndScopeTests {
+    func populate(_ catalog: Catalog) async throws -> (Source, Int64) {
+        let source = try await catalog.addSource(root: "/r")
+        let scan = try await catalog.writer.beginScan(sourceId: source.id)
+        try await catalog.writer.write([
+            doc("/r/top.txt", size: 1),
+            doc("/r/a/x.txt", size: 10),
+            doc("/r/a/b/y.txt", size: 100),
+            doc("/r/a/b/z.zip", mime: "application/zip", size: 1000),
+            doc("/r/a/b/z.zip#/inner.txt", parent: "/r/a/b/z.zip", size: 5000),
+            doc("/r/c/w.txt", size: 10000),
+        ], source: source, scanId: scan)
+        try await catalog.writer.finishScan(sourceId: source.id, scanId: scan, counters: ScanCounters(),
+                                            indexedOptions: source.options)
+        return (source, scan)
+    }
+
+    @Test func folderTreeCountsFilesBelow() async throws {
+        let (catalog, directory) = try makeCatalog()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let (source, _) = try await populate(catalog)
+
+        let root = try #require(try await catalog.folder(sourceId: source.id, path: "/r"))
+        // Archive members are counted in their archive
+        #expect(root.count == 5)
+        #expect(root.size == 11111)
+        #expect(root.hasSubfolders)
+
+        let first = try await catalog.folders(sourceId: source.id, parent: "/r")
+        #expect(first.map(\.name) == ["a", "c"])
+        #expect(first.map(\.count) == [3, 1])
+        #expect(first.map(\.hasSubfolders) == [true, false])
+        #expect(try await catalog.folders(sourceId: source.id, parent: "/r/a").map(\.path) == ["/r/a/b"])
+        #expect(try await catalog.folders(sourceId: source.id, parent: "/r/a/b").isEmpty)
+    }
+
+    @Test func scopedScansOnlyDeleteInsideTheirScopes() async throws {
+        let (catalog, directory) = try makeCatalog()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let (source, _) = try await populate(catalog)
+        let writer = catalog.writer
+
+        // Scans that see nothing: what they delete depends only on their scopes
+        var scan = try await writer.beginScan(sourceId: source.id)
+        #expect(try await writer.finishScan(sourceId: source.id, scanId: scan, counters: ScanCounters(),
+                                            scopes: [ScanScope(path: "/r/a", recursive: false)]) == 1)
+        #expect(try await catalog.search(SearchQuery()).hits.map(\.document.path).contains("/r/a/x.txt") == false)
+
+        scan = try await writer.beginScan(sourceId: source.id)
+        #expect(try await writer.finishScan(sourceId: source.id, scanId: scan, counters: ScanCounters(),
+                                            scopes: [ScanScope(path: "/r/a", recursive: true)]) == 2)
+        let left = Set(try await catalog.search(SearchQuery()).hits.map(\.document.path))
+        // The archive took its member with it
+        #expect(left == ["/r/top.txt", "/r/c/w.txt"])
+        #expect(try await catalog.folders(sourceId: source.id, parent: "/r").map(\.name) == ["c"])
+
+        // A scoped scan does not record the options as indexed
+        #expect(try await catalog.source(id: source.id).indexedOptions == source.options)
+    }
+
+    @Test func migratingFromVersion1KeepsDocumentsAndBuildsFolders() async throws {
+        let (catalog, directory) = try makeCatalog()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let (source, _) = try await populate(catalog)
+        try await catalog.pool.write { db in
+            try db.execute(sql: "UPDATE document SET directory = NULL; DELETE FROM folder")
+            // What the v2 migration runs on catalogs made before it
+            try db.execute(sql: """
+                UPDATE document SET directory = coalesce(nullif(rtrim(rtrim(path, replace(path, '/', '')), '/'), ''), '/')
+                WHERE parentId IS NULL
+                """)
+            try CatalogWriter.rebuildFolders(db, sourceId: source.id, root: "/r")
+        }
+        #expect(try await catalog.folder(sourceId: source.id, path: "/r")?.count == 5)
+        #expect(try await catalog.folders(sourceId: source.id, parent: "/r/a").map(\.path) == ["/r/a/b"])
+    }
+}
+
+@Suite struct ScanOptionsTests {
+    @Test func onlyExtractionSettingsRequireARebuild() {
+        let base = ScanOptions()
+        var walkOnly = base
+        walkOnly.excludePattern = "/tmp/"
+        walkOnly.maxDepth = 3
+        walkOnly.threads = 2
+        walkOnly.jobTimeout = 5
+        #expect(!walkOnly.changesExtraction(comparedTo: base))
+
+        for change in [{ (o: inout ScanOptions) in o.ocrImages = true },
+                       { o in o.contentSizeLimit = 100 },
+                       { o in o.thumbnailCount = 0 },
+                       { o in o.archiveMode = .list },
+                       { o in o.ocrLanguages = ["ja"] }] {
+            var options = base
+            change(&options)
+            #expect(options.changesExtraction(comparedTo: base))
+        }
     }
 }

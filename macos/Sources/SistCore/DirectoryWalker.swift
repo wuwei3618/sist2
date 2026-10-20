@@ -146,7 +146,7 @@ public final class DirectoryWalker: Sequence, IteratorProtocol {
     }
 
     /// Bundles such as .app, .rtfd or .photoslibrary look like files in Finder
-    private static func isPackage(path: String, name: String) -> Bool {
+    public static func isPackage(path: String, name: String) -> Bool {
         #if os(macOS)
         guard name.contains(".") else { return false }
         let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isPackageKey])

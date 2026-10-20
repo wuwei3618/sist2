@@ -11,6 +11,8 @@ public struct Source: Sendable, Hashable, Identifiable, FetchableRecord {
     public var createdAt: Date
     public var lastScanAt: Date?
     public var lastScanId: Int64?
+    /// The options of the last complete scan, nil until one completes
+    public var indexedOptions: ScanOptions?
 
     public init(row: Row) throws {
         id = row["id"]
@@ -21,7 +23,26 @@ public struct Source: Sendable, Hashable, Identifiable, FetchableRecord {
         createdAt = row["createdAt"]
         lastScanAt = row["lastScanAt"]
         lastScanId = row["lastScanId"]
+        let indexedJSON: String? = row["indexedOptions"]
+        indexedOptions = indexedJSON.flatMap { try? JSONDecoder().decode(ScanOptions.self, from: Data($0.utf8)) }
     }
+
+    /// The next scan has to parse every file again: the options changed in ways that affect parsing
+    public var needsRebuild: Bool {
+        indexedOptions.map { options.changesExtraction(comparedTo: $0) } ?? false
+    }
+}
+
+/// A folder of a source with the number and total size of the files below it.
+public struct FolderInfo: Sendable, Hashable, Identifiable {
+    public var sourceId: Int64
+    public var path: String
+    public var name: String
+    public var count: Int
+    public var size: Int64
+    public var hasSubfolders: Bool
+
+    public var id: String { "\(sourceId):\(path)" }
 }
 
 /// A source with its document count and total size, for the sidebar.

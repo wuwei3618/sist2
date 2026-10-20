@@ -124,10 +124,6 @@ extension DocumentSummary {
 
     var fileURL: URL { URL(fileURLWithPath: fileSystemPath) }
 
-    @MainActor func open() {
-        NSWorkspace.shared.open(fileURL)
-    }
-
     @MainActor func revealInFinder() {
         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
     }

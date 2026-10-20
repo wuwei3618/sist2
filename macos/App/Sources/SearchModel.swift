@@ -7,6 +7,86 @@ enum DisplayMode: String, CaseIterable {
     case list, grid
 }
 
+/// A folder of a source chosen in the sidebar tree
+struct FolderFilter: Hashable {
+    var sourceId: Int64
+    var path: String
+    var name: String
+}
+
+enum SizeFilter: String, CaseIterable, Hashable {
+    case any, under100KB, upTo1MB, upTo10MB, upTo100MB, over100MB
+
+    var range: (min: Int64?, max: Int64?) {
+        let kb: Int64 = 1024
+        let mb = kb * 1024
+        switch self {
+        case .any: return (nil, nil)
+        case .under100KB: return (nil, 100 * kb - 1)
+        case .upTo1MB: return (100 * kb, mb - 1)
+        case .upTo10MB: return (mb, 10 * mb - 1)
+        case .upTo100MB: return (10 * mb, 100 * mb - 1)
+        case .over100MB: return (100 * mb, nil)
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .any: return "任意大小"
+        case .under100KB: return "小于 100 KB"
+        case .upTo1MB: return "100 KB – 1 MB"
+        case .upTo10MB: return "1 – 10 MB"
+        case .upTo100MB: return "10 – 100 MB"
+        case .over100MB: return "大于 100 MB"
+        }
+    }
+}
+
+enum DateFilter: Hashable {
+    case any, today, last7Days, last30Days, thisYear, lastYear, olderThanAYear
+    /// Whole days, both included
+    case custom(from: Date, to: Date)
+
+    static let presets: [DateFilter] = [.any, .today, .last7Days, .last30Days, .thisYear, .lastYear, .olderThanAYear]
+
+    func range(now: Date = Date(), calendar: Calendar = .current) -> (after: Date?, before: Date?) {
+        let today = calendar.startOfDay(for: now)
+        let thisYear = calendar.date(from: calendar.dateComponents([.year], from: now))!
+        switch self {
+        case .any: return (nil, nil)
+        case .today: return (today, nil)
+        case .last7Days: return (calendar.date(byAdding: .day, value: -7, to: today), nil)
+        case .last30Days: return (calendar.date(byAdding: .day, value: -30, to: today), nil)
+        case .thisYear: return (thisYear, nil)
+        case .lastYear: return (calendar.date(byAdding: .year, value: -1, to: thisYear), thisYear)
+        case .olderThanAYear: return (nil, calendar.date(byAdding: .year, value: -1, to: today))
+        case .custom(let from, let to):
+            let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: max(from, to)))
+            return (calendar.startOfDay(for: min(from, to)), end)
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .any: return "任意时间"
+        case .today: return "今天"
+        case .last7Days: return "最近 7 天"
+        case .last30Days: return "最近 30 天"
+        case .thisYear: return "今年"
+        case .lastYear: return "去年"
+        case .olderThanAYear: return "一年以前"
+        case .custom(let from, let to):
+            let format = Date.FormatStyle(date: .numeric, time: .omitted)
+            return "\(min(from, to).formatted(format)) – \(max(from, to).formatted(format))"
+        }
+    }
+
+    var isCustom: Bool {
+        if case .custom = self { return true }
+        return false
+    }
+}
+
 /// The query, its filters and its results. Any change re-runs the search; typing is debounced.
 @MainActor
 @Observable
@@ -21,6 +101,15 @@ final class SearchModel {
     }
     var sourceIds: Set<Int64> = [] {
         didSet { if sourceIds != oldValue { run() } }
+    }
+    var folder: FolderFilter? {
+        didSet { if folder != oldValue { run() } }
+    }
+    var sizeFilter: SizeFilter = .any {
+        didSet { if sizeFilter != oldValue { run() } }
+    }
+    var dateFilter: DateFilter = .any {
+        didSet { if dateFilter != oldValue { run() } }
     }
     var tags: Set<String> = [] {
         didSet { if tags != oldValue { run() } }
@@ -54,6 +143,11 @@ final class SearchModel {
     var selectedHit: SearchHit? {
         guard selection.count == 1, let id = selection.first else { return nil }
         return hits.first { $0.id == id }
+    }
+
+    var hasFilters: Bool {
+        !categories.isEmpty || !sourceIds.isEmpty || folder != nil || sizeFilter != .any || dateFilter != .any
+            || !tags.isEmpty
     }
 
     func scheduleSearch() {
@@ -109,6 +203,9 @@ final class SearchModel {
     func clearFilters() {
         categories = []
         sourceIds = []
+        folder = nil
+        sizeFilter = .any
+        dateFilter = .any
         tags = []
     }
 
@@ -116,6 +213,13 @@ final class SearchModel {
         var query = SearchQuery(text: text)
         query.categories = categories
         query.sourceIds = sourceIds
+        if let folder {
+            // Sources may be nested: the folder belongs to one of them
+            query.sourceIds = [folder.sourceId]
+            query.pathPrefix = folder.path
+        }
+        (query.minSize, query.maxSize) = sizeFilter.range
+        (query.modifiedAfter, query.modifiedBefore) = dateFilter.range()
         query.tags = tags
         query.sort = sort
         query.includeArchiveMembers = includeArchiveMembers

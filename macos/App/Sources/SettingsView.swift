@@ -65,9 +65,17 @@ private struct SourcesSettingsView: View {
                     }
                     .formStyle(.grouped)
                     HStack {
+                        // Parsing settings apply to every file only by parsing them all again
+                        if options.changesExtraction(comparedTo: info.source.indexedOptions ?? info.source.options) {
+                            Label("这些更改会让所有文件重新解析", systemImage: "arrow.clockwise")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         Spacer()
+                        Button("重建索引") { model.rebuild(info.id) }
+                            .disabled(model.isScanning(info.id))
                         Button("还原") { options = info.source.options }
-                        Button("保存并重新扫描") {
+                        Button("保存并扫描") {
                             let id = info.id
                             let newOptions = options
                             Task {

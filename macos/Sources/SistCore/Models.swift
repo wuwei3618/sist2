@@ -185,6 +185,38 @@ public struct ScanOptions: Codable, Sendable, Hashable {
     public var effectiveThreads: Int {
         threads > 0 ? threads : max(1, ProcessInfo.processInfo.activeProcessorCount)
     }
+
+    /// Whether files parsed with `other` would come out differently with these options, in which
+    /// case unchanged files have to be parsed again. Options that only steer the walk (depth,
+    /// exclusions, hidden files, packages) or the scan itself (threads, timeout) need no reparse:
+    /// the next walk adds and removes files accordingly. Options added later count as extraction
+    /// options until listed here.
+    public func changesExtraction(comparedTo other: ScanOptions) -> Bool {
+        func extractionOnly(_ options: ScanOptions) -> ScanOptions {
+            var copy = options
+            let defaults = ScanOptions()
+            copy.maxDepth = defaults.maxDepth
+            copy.excludePattern = defaults.excludePattern
+            copy.skipHiddenFiles = defaults.skipHiddenFiles
+            copy.treatPackagesAsFiles = defaults.treatPackagesAsFiles
+            copy.jobTimeout = defaults.jobTimeout
+            copy.threads = defaults.threads
+            return copy
+        }
+        return extractionOnly(self) != extractionOnly(other)
+    }
+}
+
+/// Part of a source to scan: a directory, with or without its subdirectories. A scan limited to
+/// scopes only adds, updates and deletes documents inside them.
+public struct ScanScope: Codable, Sendable, Hashable {
+    public var path: String
+    public var recursive: Bool
+
+    public init(path: String, recursive: Bool) {
+        self.path = path
+        self.recursive = recursive
+    }
 }
 
 public extension String {

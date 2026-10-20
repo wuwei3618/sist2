@@ -67,6 +67,7 @@ let package = Package(
             name: "sist",
             dependencies: [
                 "SistScan",
+                "SistExtractors",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),

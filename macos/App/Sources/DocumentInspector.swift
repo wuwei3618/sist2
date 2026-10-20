@@ -2,34 +2,52 @@ import SwiftUI
 import SistCore
 import SistStore
 
+/// Details of the selected document. Archives list their members; following a member (or the
+/// archive holding a member) stacks up, with a way back.
 struct DocumentInspector: View {
     @Environment(AppModel.self) private var model
     @Environment(SearchModel.self) private var search
     let hit: SearchHit?
+    /// Documents reached from the selection by following archive links
+    @State private var trail: [Int64] = []
     @State private var detail: DocumentDetail?
+    @State private var members: [DocumentSummary] = []
+    @State private var parent: DocumentSummary?
     @State private var newTag = ""
+
+    static let memberLimit = 500
+
+    private var currentId: Int64? { trail.last ?? hit?.id }
 
     var body: some View {
         Group {
-            if let detail, detail.summary.id == hit?.id {
+            if let detail, detail.summary.id == currentId {
                 content(detail)
-            } else if hit == nil {
+            } else if currentId == nil {
                 ContentUnavailableView("未选择文件", systemImage: "doc.text.magnifyingglass")
             } else {
                 ProgressView()
             }
         }
         .task(id: hit?.id) {
+            trail = []
+        }
+        .task(id: currentId) {
             await load()
         }
     }
 
     private func load() async {
-        guard let id = hit?.id else {
+        guard let id = currentId, let catalog = model.catalog else {
             detail = nil
             return
         }
-        detail = try? await model.catalog?.document(id: id)
+        detail = try? await catalog.document(id: id)
+        members = (try? await catalog.children(of: id, limit: Self.memberLimit + 1)) ?? []
+        parent = nil
+        if let parentId = detail?.summary.parentId {
+            parent = try? await catalog.document(id: parentId)?.summary
+        }
     }
 
     @ViewBuilder
@@ -37,6 +55,15 @@ struct DocumentInspector: View {
         let document = detail.summary
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if !trail.isEmpty {
+                    Button {
+                        trail.removeLast()
+                    } label: {
+                        Label("返回", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.borderless)
+                }
+
                 HStack {
                     Spacer()
                     ThumbnailView(document: document, size: 220)
@@ -54,16 +81,43 @@ struct DocumentInspector: View {
                 }
 
                 HStack {
-                    Button("打开") { document.open() }
-                    Button("快速查看") { search.previewURL = document.fileURL }
+                    Button("打开") { model.open(document) }
+                    Button("快速查看") { model.preview(document) }
                     Button("在 Finder 中显示") { document.revealInFinder() }
                 }
                 .controlSize(.small)
+
+                if let parent {
+                    Button {
+                        trail.append(parent.id)
+                    } label: {
+                        Label("位于压缩包 \(parent.name)", systemImage: "archivebox")
+                    }
+                    .buttonStyle(.link)
+                }
 
                 if let error = detail.error {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
+                }
+
+                if !members.isEmpty {
+                    GroupBox(memberTitle(detail)) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(members.prefix(Self.memberLimit)) { member in
+                                MemberRow(member: member, archivePath: document.path) {
+                                    trail.append(member.id)
+                                }
+                            }
+                            if members.count > Self.memberLimit {
+                                Text("只列出前 \(Self.memberLimit) 个，其余可以搜索找到")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
 
                 GroupBox("信息") {
@@ -126,6 +180,13 @@ struct DocumentInspector: View {
         }
     }
 
+    private func memberTitle(_ detail: DocumentDetail) -> String {
+        if case .int(let count)? = detail.metadata[MetaKey.archiveMembers] {
+            return "压缩包内容（\(count) 个文件）"
+        }
+        return "压缩包内容"
+    }
+
     private func infoRow(_ label: String, _ value: String) -> some View {
         GridRow {
             Text(label)
@@ -135,5 +196,44 @@ struct DocumentInspector: View {
                 .textSelection(.enabled)
                 .lineLimit(3)
         }
+    }
+}
+
+private struct MemberRow: View {
+    @Environment(AppModel.self) private var model
+    let member: DocumentSummary
+    let archivePath: String
+    let select: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: member.category.symbol)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(innerPath)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Text(Format.bytes(member.size))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .font(.caption)
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { model.open(member) }
+        .onTapGesture(perform: select)
+        .contextMenu {
+            Button("打开") { model.open(member) }
+            Button("快速查看") { model.preview(member) }
+            Button("查看详情", action: select)
+        }
+        .help(member.path)
+    }
+
+    /// The path inside the archive
+    private var innerPath: String {
+        let prefix = archivePath + "#/"
+        return member.path.hasPrefix(prefix) ? String(member.path.dropFirst(prefix.count)) : member.name
     }
 }

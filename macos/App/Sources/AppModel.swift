@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Observation
 import SistCore
+import SistExtractors
 import SistScan
 import SistStore
 
@@ -13,6 +14,8 @@ final class AppModel {
     private(set) var sources: [SourceInfo] = []
     private(set) var tags: [TagCount] = []
     private(set) var activeScans: [Int64: ScanProgress] = [:]
+    /// Bumped when a scan finishes, so views showing catalog data (the folder tree) reload it
+    private(set) var catalogVersion = 0
     var errorMessage: String?
 
     /// Options given to newly added folders
@@ -34,7 +37,8 @@ final class AppModel {
     @ObservationIgnored private var scanTasks: [Int64: Task<Void, Never>] = [:]
     @ObservationIgnored private var watchers: [Int64: FileSystemWatcher] = [:]
     @ObservationIgnored private var pendingRescans: [Int64: Task<Void, Never>] = [:]
-    @ObservationIgnored private var changedDuringScan: Set<Int64> = []
+    /// FSEvents gathered per source until the next rescan
+    @ObservationIgnored private var pendingEvents: [Int64: [FileChange]] = [:]
 
     static let rescanDelay: Duration = .seconds(10)
 
@@ -131,7 +135,9 @@ final class AppModel {
 
     // MARK: Scans
 
-    func scan(_ id: Int64) {
+    /// Scans a source, or only `scopes` of it. Options that changed how files are parsed make it a
+    /// rebuild of the whole source (see ScanCoordinator).
+    func scan(_ id: Int64, mode: ScanMode = .incremental, scopes: [ScanScope]? = nil) {
         guard let catalog, scanTasks[id] == nil else { return }
         let coordinator = ScanCoordinator(catalog: catalog)
         let report: @Sendable (ScanProgress) -> Void = { [weak self] progress in
@@ -142,7 +148,7 @@ final class AppModel {
         }
         scanTasks[id] = Task { [weak self] in
             do {
-                try await coordinator.scan(sourceId: id, progress: report)
+                try await coordinator.scan(sourceId: id, mode: mode, scopes: scopes, progress: report)
             } catch is CancellationError {
             } catch {
                 self?.errorMessage = "扫描失败：\(error)"
@@ -151,12 +157,23 @@ final class AppModel {
         }
     }
 
+    func rebuild(_ id: Int64) {
+        scan(id, mode: .rebuild)
+    }
+
+    /// Rescans one folder of a source and everything below it
+    func scanFolder(_ folder: FolderFilter) {
+        scan(folder.sourceId, scopes: [ScanScope(path: folder.path, recursive: true)])
+    }
+
     private func scanFinished(_ id: Int64) async {
         scanTasks[id] = nil
         activeScans[id] = nil
+        catalogVersion += 1
         await refreshSources()
         search.run()
-        if changedDuringScan.remove(id) != nil {
+        // Changes that arrived during the scan
+        if pendingEvents[id]?.isEmpty == false {
             scheduleRescan(id)
         }
     }
@@ -193,9 +210,9 @@ final class AppModel {
         let catalogDirectory = (Catalog.defaultPath as NSString).deletingLastPathComponent
         for info in sources where wanted.contains(info.id) && watchers[info.id] == nil {
             let id = info.id
-            let watcher = FileSystemWatcher(path: info.source.root, ignoring: [catalogDirectory]) { [weak self] in
+            let watcher = FileSystemWatcher(path: info.source.root, ignoring: [catalogDirectory]) { [weak self] events in
                 Task { @MainActor [weak self] in
-                    self?.folderChanged(id)
+                    self?.folderChanged(id, events: events)
                 }
             }
             watcher.start()
@@ -203,10 +220,10 @@ final class AppModel {
         }
     }
 
-    private func folderChanged(_ id: Int64) {
-        if scanTasks[id] != nil {
-            changedDuringScan.insert(id)
-        } else {
+    private func folderChanged(_ id: Int64, events: [FileChange]) {
+        pendingEvents[id, default: []] += events
+        // A running scan picks the events up when it finishes
+        if scanTasks[id] == nil {
             scheduleRescan(id)
         }
     }
@@ -215,9 +232,42 @@ final class AppModel {
         pendingRescans[id]?.cancel()
         pendingRescans[id] = Task { [weak self] in
             try? await Task.sleep(for: Self.rescanDelay)
-            guard !Task.isCancelled else { return }
-            self?.pendingRescans[id] = nil
-            self?.scan(id)
+            guard !Task.isCancelled, let self else { return }
+            self.pendingRescans[id] = nil
+            guard let root = self.sources.first(where: { $0.id == id })?.source.root else { return }
+            let events = self.pendingEvents.removeValue(forKey: id) ?? []
+            self.scan(id, scopes: ChangeScopes.scopes(for: events, root: root))
+        }
+    }
+
+    // MARK: Opening documents
+
+    /// Opens the file; an archive member is extracted to a temporary file first.
+    func open(_ document: DocumentSummary) {
+        withFileURL(for: document) { NSWorkspace.shared.open($0) }
+    }
+
+    /// Shows the document in Quick Look; an archive member is extracted to a temporary file first.
+    func preview(_ document: DocumentSummary) {
+        withFileURL(for: document) { [weak self] url in self?.search.previewURL = url }
+    }
+
+    private func withFileURL(for document: DocumentSummary, _ action: @escaping @MainActor (URL) -> Void) {
+        guard document.isArchiveMember else {
+            action(document.fileURL)
+            return
+        }
+        let path = document.path
+        let id = document.id
+        Task { [weak self] in
+            do {
+                let url = try await Task.detached {
+                    try ArchiveMemberReader.extractToTemporaryFile(path: path, documentId: id)
+                }.value
+                action(url)
+            } catch {
+                self?.errorMessage = "无法从压缩包中取出 \(document.name)：\(error)"
+            }
         }
     }
 

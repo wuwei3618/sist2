@@ -175,3 +175,141 @@ final class CancelBox: @unchecked Sendable {
         task?.cancel()
     }
 }
+
+@Suite(.serialized) struct RebuildAndScopeTests {
+    func setUp(_ files: [String: String]) async throws -> (Catalog, Source, String) {
+        let root = try makeTree(files)
+        let catalog = try Catalog(path: root + ".catalog/catalog.sqlite")
+        let source = try await catalog.addSource(root: root)
+        return (catalog, source, root)
+    }
+
+    func cleanUp(_ root: String) {
+        try? FileManager.default.removeItem(atPath: root)
+        try? FileManager.default.removeItem(atPath: root + ".catalog")
+    }
+
+    @Test func changingExtractionOptionsReparsesEverything() async throws {
+        let (catalog, source, root) = try await setUp(["a.txt": "alpha beta gamma", "b.txt": "delta epsilon"])
+        defer { cleanUp(root) }
+        let coordinator = ScanCoordinator(catalog: catalog, isolation: .inProcess)
+        try await coordinator.scan(sourceId: source.id)
+
+        var options = source.options
+        options.contentSizeLimit = 5
+        try await catalog.updateSource(id: source.id, options: options)
+        #expect(try await catalog.source(id: source.id).needsRebuild)
+
+        var counters = try await coordinator.scan(sourceId: source.id)
+        #expect(counters.parsed == 2)
+        #expect(counters.unchanged == 0)
+        #expect(try await catalog.search(SearchQuery(text: "gamma")).total == 0)
+        #expect(try await catalog.search(SearchQuery(text: "alpha")).total == 1)
+
+        counters = try await coordinator.scan(sourceId: source.id)
+        #expect(counters.parsed == 0)
+
+        // Options that only steer the walk do not reparse
+        options.excludePattern = "/nothing-matches-this/"
+        try await catalog.updateSource(id: source.id, options: options)
+        counters = try await coordinator.scan(sourceId: source.id)
+        #expect(counters.parsed == 0)
+        #expect(counters.unchanged == 2)
+
+        counters = try await coordinator.scan(sourceId: source.id, mode: .rebuild)
+        #expect(counters.parsed == 2)
+    }
+
+    @Test func scopedScans() async throws {
+        let (catalog, source, root) = try await setUp([
+            "a/one.txt": "one", "a/sub/two.txt": "two", "b/three.txt": "three", "top.txt": "top",
+        ])
+        defer { cleanUp(root) }
+        let coordinator = ScanCoordinator(catalog: catalog, isolation: .inProcess)
+        try await coordinator.scan(sourceId: source.id)
+
+        try "one changed".write(toFile: root + "/a/one.txt", atomically: true, encoding: .utf8)
+        try setMtime(root + "/a/one.txt", 1_000_000)
+        try "new".write(toFile: root + "/a/new.txt", atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(atPath: root + "/a/sub/two.txt")
+        try FileManager.default.removeItem(atPath: root + "/b/three.txt")
+
+        // Only the files directly in a/: the deletion in a/sub is not seen yet, nor the one in b/
+        var counters = try await coordinator.scan(
+            sourceId: source.id, scopes: [ScanScope(path: root + "/a", recursive: false)])
+        #expect(counters.walked == 2)
+        #expect(counters.parsed == 2)
+        #expect(counters.deleted == 0)
+        #expect(try await catalog.search(SearchQuery(text: "changed")).total == 1)
+        #expect(try await catalog.search(SearchQuery()).total == 5)
+
+        counters = try await coordinator.scan(sourceId: source.id, scopes: [ScanScope(path: root + "/a", recursive: true)])
+        #expect(counters.deleted == 1)
+
+        // A scope that no longer exists deletes what it held
+        try FileManager.default.removeItem(atPath: root + "/b")
+        counters = try await coordinator.scan(sourceId: source.id, scopes: [ScanScope(path: root + "/b", recursive: true)])
+        #expect(counters.deleted == 1)
+        #expect(Set(try await catalog.search(SearchQuery()).hits.map(\.document.name)) == ["one.txt", "new.txt", "top.txt"])
+    }
+
+    @Test func scopePlanning() async throws {
+        let (catalog, source, root) = try await setUp(["a/x.txt": "x", ".hidden/y.txt": "y", "top.txt": "t"])
+        defer { cleanUp(root) }
+
+        #expect(ScanCoordinator.plan([ScanScope(path: "/elsewhere", recursive: true)], source: source) == [])
+        #expect(ScanCoordinator.plan([ScanScope(path: root + "/", recursive: true)], source: source) == nil)
+        #expect(ScanCoordinator.plan([
+            ScanScope(path: root + "/a", recursive: true),
+            ScanScope(path: root + "/a", recursive: false),
+            ScanScope(path: root + "/a/deeper", recursive: false),
+            ScanScope(path: root + "/a/deeper/", recursive: true),
+            ScanScope(path: root + "/b", recursive: false),
+        ], source: source) == [ScanScope(path: root + "/a", recursive: true), ScanScope(path: root + "/b", recursive: false)])
+
+        let ignore = IgnoreList(root: root, patterns: ["ignored/"])
+        #expect(ScanCoordinator.walkOptions(for: ScanScope(path: root + "/.hidden", recursive: true),
+                                            source: source, ignoreList: ignore) == nil)
+        #expect(ScanCoordinator.walkOptions(for: ScanScope(path: root + "/x/ignored/y", recursive: true),
+                                            source: source, ignoreList: ignore) == nil)
+        var limited = source
+        limited.options.maxDepth = 1
+        #expect(ScanCoordinator.walkOptions(for: ScanScope(path: root + "/a", recursive: true),
+                                            source: limited, ignoreList: ignore)?.maxDepth == 0)
+        #expect(ScanCoordinator.walkOptions(for: ScanScope(path: root + "/a/b", recursive: false),
+                                            source: limited, ignoreList: ignore) == nil)
+
+        // The first scan of a source covers all of it, whatever scopes it is given
+        let counters = try await ScanCoordinator(catalog: catalog, isolation: .inProcess)
+            .scan(sourceId: source.id, scopes: [ScanScope(path: root + "/a", recursive: false)])
+        #expect(counters.walked == 2)
+        #expect(try await catalog.source(id: source.id).indexedOptions != nil)
+    }
+}
+
+@Suite struct ChangeScopesTests {
+    @Test func filesRescanTheirFolderDirectoriesTheirSubtree() {
+        let scopes = ChangeScopes.scopes(for: [
+            FileChange(path: "/r/a/one.txt", isDirectory: false),
+            FileChange(path: "/r/a/two.txt", isDirectory: false),
+            FileChange(path: "/r/b", isDirectory: true),
+            FileChange(path: "/r/c/d", isDirectory: false, mustRescanSubtree: true),
+        ], root: "/r")
+        #expect(scopes == [
+            ScanScope(path: "/r/a", recursive: false),
+            ScanScope(path: "/r/b", recursive: true),
+            ScanScope(path: "/r/c/d", recursive: true),
+        ])
+    }
+
+    @Test func lostTrackOfTheRootMeansAFullScan() {
+        #expect(ChangeScopes.scopes(for: [FileChange(path: "/r", isDirectory: true, mustRescanSubtree: true)],
+                                    root: "/r") == nil)
+        // Dropped events are reported on "/"
+        #expect(ChangeScopes.scopes(for: [FileChange(path: "/", isDirectory: false, mustRescanSubtree: true)],
+                                    root: "/r") == nil)
+        let many = (0..<10).map { FileChange(path: "/r/dir\($0)/file", isDirectory: false) }
+        #expect(ChangeScopes.scopes(for: many, root: "/r", limit: 5) == nil)
+        #expect(ChangeScopes.scopes(for: many, root: "/r", limit: 10)?.count == 10)
+    }
+}

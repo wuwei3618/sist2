@@ -102,6 +102,37 @@ enum Schema {
                 """)
         }
 
+        migrator.registerMigration("v2") { db in
+            try db.execute(sql: """
+                -- The options of the last complete scan: when they change in ways that affect
+                -- parsing, the next scan parses every file again
+                ALTER TABLE source ADD COLUMN indexedOptions TEXT;
+
+                -- Directory of files on disk (NULL for archive members): the folder tree, and
+                -- deletion in scans limited to some directories
+                ALTER TABLE document ADD COLUMN directory TEXT;
+                UPDATE document SET directory = coalesce(nullif(rtrim(rtrim(path, replace(path, '/', '')), '/'), ''), '/')
+                WHERE parentId IS NULL;
+                CREATE INDEX document_directory ON document(sourceId, parentId, directory, size);
+
+                -- Every folder holding files, with recursive counts, rebuilt at the end of each
+                -- scan (sist2's path_index)
+                CREATE TABLE folder (
+                    sourceId INTEGER NOT NULL REFERENCES source(id) ON DELETE CASCADE,
+                    path TEXT NOT NULL,
+                    parent TEXT,
+                    name TEXT NOT NULL,
+                    count INTEGER NOT NULL,
+                    size INTEGER NOT NULL,
+                    PRIMARY KEY (sourceId, path)
+                ) WITHOUT ROWID;
+                CREATE INDEX folder_parent ON folder(sourceId, parent);
+                """)
+            for row in try Row.fetchAll(db, sql: "SELECT id, root FROM source") {
+                try CatalogWriter.rebuildFolders(db, sourceId: row["id"], root: row["root"])
+            }
+        }
+
         return migrator
     }
 }

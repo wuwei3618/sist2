@@ -30,6 +30,9 @@ struct ResultsView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            ActiveFilters()
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StatusBar()
         }
@@ -37,6 +40,7 @@ struct ResultsView: View {
 }
 
 private struct ResultList: View {
+    @Environment(AppModel.self) private var model
     @Environment(SearchModel.self) private var search
 
     var body: some View {
@@ -55,11 +59,15 @@ private struct ResultList: View {
         .contextMenu(forSelectionType: Int64.self) { ids in
             DocumentMenu(documents: documents(ids))
         } primaryAction: { ids in
-            documents(ids).forEach { $0.open() }
+            documents(ids).forEach { model.open($0) }
         }
         .onKeyPress(.space) {
             guard let hit = search.selectedHit else { return .ignored }
-            search.previewURL = search.previewURL == nil ? hit.document.fileURL : nil
+            if search.previewURL == nil {
+                model.preview(hit.document)
+            } else {
+                search.previewURL = nil
+            }
             return .handled
         }
     }
@@ -70,6 +78,7 @@ private struct ResultList: View {
 }
 
 private struct ResultGrid: View {
+    @Environment(AppModel.self) private var model
     @Environment(SearchModel.self) private var search
 
     var body: some View {
@@ -77,7 +86,7 @@ private struct ResultGrid: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)], spacing: 12) {
                 ForEach(search.hits) { hit in
                     GridCell(hit: hit, isSelected: search.selection.contains(hit.id))
-                        .onTapGesture(count: 2) { hit.document.open() }
+                        .onTapGesture(count: 2) { model.open(hit.document) }
                         .onTapGesture { search.selection = [hit.id] }
                         .contextMenu { DocumentMenu(documents: [hit.document]) }
                         .onAppear {
@@ -154,18 +163,18 @@ private struct GridCell: View {
 }
 
 struct DocumentMenu: View {
-    @Environment(SearchModel.self) private var search
+    @Environment(AppModel.self) private var model
     let documents: [DocumentSummary]
 
     var body: some View {
         if let first = documents.first {
-            Button("打开") { documents.forEach { $0.open() } }
-            Button("快速查看") { search.previewURL = first.fileURL }
+            Button("打开") { documents.forEach { model.open($0) } }
+            Button("快速查看") { model.preview(first) }
             Button("在 Finder 中显示") { first.revealInFinder() }
             Divider()
             Button("拷贝路径") { first.copyPath() }
             if first.isArchiveMember {
-                Text("位于压缩包内，打开的是压缩包本身")
+                Text("位于压缩包内：打开时先解压到临时文件夹")
             }
         }
     }

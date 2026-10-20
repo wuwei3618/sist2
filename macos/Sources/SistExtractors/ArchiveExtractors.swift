@@ -156,19 +156,39 @@ public struct ArchiveExtractor: Extractor {
         Self.mimes.contains(mime)
     }
 
-    public func extract(_ input: ExtractionInput, into result: inout Extracted, context: ExtractionContext) throws {
-        var reader: ArchiveReader
-        var first: ArchiveReader.Entry?
+    /// A reader positioned on the first entry. A plain compressed file reads as an archive of one
+    /// member named after the file.
+    static func open(_ input: ExtractionInput) throws -> (ArchiveReader, ArchiveReader.Entry?) {
         do {
-            reader = try ArchiveReader(input)
-            first = try reader.next()
-        } catch where Self.isCompressedStream(input) {
+            let reader = try ArchiveReader(input)
+            return (reader, try reader.next())
+        } catch where isCompressedStream(input) {
             // "Unrecognized archive format": a plain compressed file
-            reader = try ArchiveReader(input, raw: true)
-            first = try reader.next()
-            first?.path = Self.decompressedName(input.name)
+            let reader = try ArchiveReader(input, raw: true)
+            var first = try reader.next()
+            first?.path = decompressedName(input.name)
+            return (reader, first)
         }
+    }
 
+    /// The data of one member, found by the path the extractor gave it.
+    static func member(_ path: String, in input: ExtractionInput, limit: Int64) throws -> Data {
+        let (reader, first) = try open(input)
+        var entry = first
+        while let current = entry {
+            if current.isRegularFile && current.path == path {
+                guard let data = try reader.readData(limit: limit) else {
+                    throw ExtractionError.invalidFormat("\(path) is larger than \(limit) bytes")
+                }
+                return data
+            }
+            entry = try reader.next()
+        }
+        throw ExtractionError.invalidFormat("\(path) is not in the archive")
+    }
+
+    public func extract(_ input: ExtractionInput, into result: inout Extracted, context: ExtractionContext) throws {
+        let (reader, first) = try Self.open(input)
         let options = context.options
         var members: Int64 = 0
         var entry = first
@@ -256,5 +276,35 @@ public struct ComicBookExtractor: Extractor {
            let thumbnail = ImageScaling.thumbnail(from: data, options: context.options) {
             result.thumbnails.append(thumbnail)
         }
+    }
+}
+
+/// Reads archive members back out of their archives, for opening them or showing them in Quick
+/// Look. Paths are the catalog's: `/path/to/a.zip#/dir/b.tar#/c.txt` for a member of a member.
+public enum ArchiveMemberReader {
+    public static func data(forPath path: String, limit: Int64 = 1024 * 1024 * 1024) throws -> Data {
+        let parts = path.components(separatedBy: "#/")
+        guard parts.count >= 2 else {
+            throw ExtractionError.invalidFormat("\(path) is not an archive member")
+        }
+        var input = ExtractionInput.file(path: parts[0])
+        var data = Data()
+        for member in parts.dropFirst() {
+            data = try ArchiveExtractor.member(member, in: input, limit: limit)
+            input = .data(data, name: member.lastPathComponentFast)
+        }
+        return data
+    }
+
+    /// Writes the member to a temporary file named like it and returns its URL. The same member
+    /// lands in the same place, so extracting it again replaces the earlier copy.
+    public static func extractToTemporaryFile(path: String, documentId: Int64) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Sist", isDirectory: true)
+            .appendingPathComponent(String(documentId), isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(path.lastPathComponentFast)
+        try data(forPath: path).write(to: url, options: .atomic)
+        return url
     }
 }

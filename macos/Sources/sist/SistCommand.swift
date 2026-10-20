@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import SistCore
+import SistExtractors
 import SistScan
 import SistStore
 
@@ -15,7 +16,7 @@ struct SistCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "sist",
         abstract: "Index folders and search them. Shares its catalog with the Sist app.",
-        subcommands: [Scan.self, Search.self, Sources.self, Remove.self, Stats.self])
+        subcommands: [Scan.self, Search.self, Folders.self, Extract.self, Sources.self, Remove.self, Stats.self])
 }
 
 struct CatalogOptions: ParsableArguments {
@@ -72,6 +73,12 @@ struct Scan: AsyncParsableCommand {
     @Flag(help: "Parse in this process instead of sist-worker processes")
     var inProcess = false
 
+    @Flag(help: "Parse every file again, changed or not")
+    var rebuild = false
+
+    @Option(help: "Only scan this folder of the source (repeatable)")
+    var subpath: [String] = []
+
     @Flag(name: .shortAndLong, help: "Print warnings and errors")
     var verbose = false
 
@@ -110,8 +117,15 @@ struct Scan: AsyncParsableCommand {
         let verbose = self.verbose
         let started = Date()
         let coordinator = ScanCoordinator(catalog: catalog, isolation: inProcess ? .inProcess : .automatic)
+        let scopes = subpath.isEmpty ? nil : subpath.map {
+            ScanScope(path: URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath).standardizedFileURL.path,
+                      recursive: true)
+        }
+        if source.needsRebuild && !rebuild {
+            printError("The options changed in ways that affect parsing: every file is parsed again")
+        }
         let counters = try await coordinator.scan(
-            sourceId: source.id,
+            sourceId: source.id, mode: rebuild ? .rebuild : .incremental, scopes: scopes,
             log: { message in
                 guard verbose || message.level >= .error else { return }
                 printError("\n[\(message.level)] \(message.path): \(message.message)")
@@ -148,6 +162,18 @@ struct Search: AsyncParsableCommand {
     @Option(help: "relevance, modifiedNewest, modifiedOldest, sizeLargest, sizeSmallest, name")
     var sort = "relevance"
 
+    @Option(help: "At least this size: bytes, or with K, M, G (e.g. 10M)")
+    var minSize: String?
+
+    @Option(help: "At most this size")
+    var maxSize: String?
+
+    @Option(help: "Modified on or after this day (YYYY-MM-DD)")
+    var after: String?
+
+    @Option(help: "Modified before this day (YYYY-MM-DD)")
+    var before: String?
+
     @Flag(help: "Print JSON")
     var json = false
 
@@ -158,6 +184,10 @@ struct Search: AsyncParsableCommand {
         search.categories = Set(kind.compactMap(MimeCategory.init(rawValue:)))
         search.pathPrefix = path.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath).standardizedFileURL.path }
         search.sort = SearchSort(rawValue: sort) ?? .relevance
+        search.minSize = try minSize.map(parseSize)
+        search.maxSize = try maxSize.map(parseSize)
+        search.modifiedAfter = try after.map(parseDay)
+        search.modifiedBefore = try before.map(parseDay)
         let results = try await catalog.search(search)
 
         if json {
@@ -197,6 +227,54 @@ struct Search: AsyncParsableCommand {
             }
         }
         print("\(results.total) results in \(String(format: "%.0f", results.elapsed * 1000)) ms")
+    }
+}
+
+struct Folders: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "List the folders of an indexed folder, with the number and size of the files below each.")
+
+    @OptionGroup var catalog: CatalogOptions
+
+    @Argument(help: "Folder inside a source (default: the root of every source)")
+    var path: String?
+
+    func run() async throws {
+        let catalog = try catalog.open()
+        let sources = try await catalog.sources().map(\.source)
+        let wanted = path.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath).standardizedFileURL.path }
+        for source in sources {
+            let parent = wanted ?? source.root
+            guard parent == source.root || parent.hasPrefix(source.root == "/" ? "/" : source.root + "/") else { continue }
+            if let folder = try await catalog.folder(sourceId: source.id, path: parent) {
+                print("\(folder.path)  \(folder.count) files, \(bytes(folder.size))")
+            }
+            for folder in try await catalog.folders(sourceId: source.id, parent: parent) {
+                let marker = folder.hasSubfolders ? "+" : " "
+                print("  \(marker) \(folder.name.padding(toLength: 30, withPad: " ", startingAt: 0)) "
+                      + "\(String(folder.count).padding(toLength: 8, withPad: " ", startingAt: 0)) \(bytes(folder.size))")
+            }
+        }
+    }
+}
+
+struct Extract: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Write an archive member to a file or stdout, by its path in the catalog (archive.zip#/dir/file).")
+
+    @Argument(help: "Member path, as `sist search` prints it")
+    var path: String
+
+    @Option(name: .shortAndLong, help: "Output file (default: stdout)")
+    var output: String?
+
+    func run() throws {
+        let data = try ArchiveMemberReader.data(forPath: path)
+        if let output {
+            try data.write(to: URL(fileURLWithPath: output))
+        } else {
+            FileHandle.standardOutput.write(data)
+        }
     }
 }
 
@@ -262,6 +340,31 @@ struct Stats: AsyncParsableCommand {
             }
         }
     }
+}
+
+func bytes(_ count: Int64) -> String {
+    ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
+}
+
+func parseSize(_ text: String) throws -> Int64 {
+    let units: [Character: Int64] = ["K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40]
+    var digits = text.uppercased().trimmingCharacters(in: .whitespaces)
+    if digits.hasSuffix("B") { digits.removeLast() }
+    var multiplier: Int64 = 1
+    if let unit = digits.last, let value = units[unit] {
+        multiplier = value
+        digits.removeLast()
+    }
+    guard let number = Double(digits) else { throw ValidationError("Not a size: \(text)") }
+    return Int64(number * Double(multiplier))
+}
+
+func parseDay(_ text: String) throws -> Date {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    guard let date = formatter.date(from: text) else { throw ValidationError("Not a day (YYYY-MM-DD): \(text)") }
+    return date
 }
 
 func printError(_ message: String, newline: Bool = true) {

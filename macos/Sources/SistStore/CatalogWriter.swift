@@ -20,9 +20,11 @@ public struct ScanCounters: Sendable, Hashable {
 ///
 /// 1. `markUnchanged` stamps the files whose path, mtime and size match the catalog, and returns
 ///    the others, which are the only ones parsed.
-/// 2. `write` upserts parse results, stamped with the current scan.
-/// 3. `finishScan` stamps the members of unchanged archives (they were not parsed, so nothing
-///    stamped them), then deletes every document of the source the scan did not see.
+/// 2. `write` upserts parse results, stamped with the current scan. A file parsed again first
+///    loses its archive members: the parse emits the current ones.
+/// 3. `finishScan` deletes the files on disk the scan did not see, within its scopes (archive
+///    members go with their archive). Members of unchanged archives were neither seen nor parsed,
+///    and are left alone.
 ///
 /// A scan that does not finish never deletes anything; the next one simply starts over.
 public struct CatalogWriter: Sendable {
@@ -62,15 +64,18 @@ public struct CatalogWriter: Sendable {
 
         try await pool.write { db in
             let findParent = try db.cachedStatement(sql: "SELECT id FROM document WHERE sourceId = ? AND path = ?")
+            let findPrevious = try db.cachedStatement(
+                sql: "SELECT id FROM document WHERE sourceId = ? AND path = ? AND scanId < ?")
+            let deleteMembers = try db.cachedStatement(sql: "DELETE FROM document WHERE parentId = ?")
             let upsert = try db.cachedStatement(sql: """
-                INSERT INTO document (sourceId, parentId, path, name, ext, mime, category, size, mtime, title,
-                                      metadata, checksum, error, thumbnailCount, scanId, seenScanId)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO document (sourceId, parentId, path, directory, name, ext, mime, category, size, mtime,
+                                      title, metadata, checksum, error, thumbnailCount, scanId, seenScanId)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (sourceId, path) DO UPDATE SET
-                    parentId = excluded.parentId, name = excluded.name, ext = excluded.ext, mime = excluded.mime,
-                    category = excluded.category, size = excluded.size, mtime = excluded.mtime,
-                    title = excluded.title, metadata = excluded.metadata, checksum = excluded.checksum,
-                    error = excluded.error, thumbnailCount = excluded.thumbnailCount,
+                    parentId = excluded.parentId, directory = excluded.directory, name = excluded.name,
+                    ext = excluded.ext, mime = excluded.mime, category = excluded.category, size = excluded.size,
+                    mtime = excluded.mtime, title = excluded.title, metadata = excluded.metadata,
+                    checksum = excluded.checksum, error = excluded.error, thumbnailCount = excluded.thumbnailCount,
                     scanId = excluded.scanId, seenScanId = excluded.seenScanId
                 RETURNING id
                 """)
@@ -92,14 +97,21 @@ public struct CatalogWriter: Sendable {
             for result in results {
                 let doc = result.document
                 var parentId: Int64? = nil
+                var directory: String? = nil
                 if let parentPath = doc.parentPath {
                     parentId = try Int64.fetchOne(findParent, arguments: [source.id, parentPath])
+                } else {
+                    directory = (doc.path as NSString).deletingLastPathComponent
+                    // Parsed again: the members it had are replaced by the ones this parse emits
+                    if let previous = try Int64.fetchOne(findPrevious, arguments: [source.id, doc.path, scanId]) {
+                        try deleteMembers.execute(arguments: [previous])
+                    }
                 }
                 let metadata = doc.metadata.isEmpty
                     ? nil : String(decoding: try encoder.encode(doc.metadata), as: UTF8.self)
 
                 guard let id = try Int64.fetchOne(upsert, arguments: [
-                    source.id, parentId, doc.path, doc.name, doc.ext, doc.mime, doc.category.rawValue,
+                    source.id, parentId, doc.path, directory, doc.name, doc.ext, doc.mime, doc.category.rawValue,
                     doc.size, doc.mtime, doc.title, metadata, doc.checksum, doc.error,
                     result.thumbnails.count, scanId, scanId,
                 ]) else { continue }
@@ -112,11 +124,11 @@ public struct CatalogWriter: Sendable {
 
                 // Directories above the document, relative to the source: `name` is its own column
                 // and the root itself would match every document
-                var directory = (doc.path as NSString).deletingLastPathComponent
-                if directory.hasPrefix(rootPrefix) {
-                    directory.removeFirst(rootPrefix.count)
-                } else if directory + "/" == rootPrefix {
-                    directory = ""
+                var relativeDirectory = (doc.path as NSString).deletingLastPathComponent
+                if relativeDirectory.hasPrefix(rootPrefix) {
+                    relativeDirectory.removeFirst(rootPrefix.count)
+                } else if relativeDirectory + "/" == rootPrefix {
+                    relativeDirectory = ""
                 }
 
                 try deleteFTS.execute(arguments: [id])
@@ -125,7 +137,7 @@ public struct CatalogWriter: Sendable {
                     SearchText.indexable(doc.name),
                     doc.title.map(SearchText.indexable),
                     doc.content.map(SearchText.indexable),
-                    SearchText.indexable(directory),
+                    SearchText.indexable(relativeDirectory),
                 ])
 
                 try deleteThumbnails.execute(arguments: [id])
@@ -136,35 +148,82 @@ public struct CatalogWriter: Sendable {
         }
     }
 
-    /// Returns the number of documents deleted.
+    /// Deletes what the scan did not see, within `scopes` (everywhere when nil), and returns the
+    /// number of files deleted. A complete scan records `indexedOptions` as the options the catalog
+    /// now reflects.
     @discardableResult
-    public func finishScan(sourceId: Int64, scanId: Int64, counters: ScanCounters) async throws -> Int {
+    public func finishScan(sourceId: Int64, scanId: Int64, counters: ScanCounters, scopes: [ScanScope]? = nil,
+                           indexedOptions: ScanOptions? = nil) async throws -> Int {
         try await pool.write { db in
-            try db.execute(sql: """
-                WITH RECURSIVE
-                    unchanged(id) AS (
-                        SELECT id FROM document WHERE sourceId = :source AND seenScanId = :scan AND scanId < :scan
-                    ),
-                    descendant(id) AS (
-                        SELECT d.id FROM document d JOIN unchanged u ON d.parentId = u.id
-                        UNION
-                        SELECT d.id FROM document d JOIN descendant p ON d.parentId = p.id
-                    )
-                UPDATE document SET seenScanId = :scan WHERE id IN (SELECT id FROM descendant)
-                """, arguments: ["source": sourceId, "scan": scanId])
+            var conditions = ["sourceId = ?", "parentId IS NULL", "seenScanId < ?"]
+            var arguments: StatementArguments = [sourceId, scanId]
+            if let scopes {
+                guard !scopes.isEmpty else { return 0 }
+                var alternatives: [String] = []
+                for scope in scopes {
+                    if scope.recursive {
+                        let prefix = scope.path == "/" ? "/" : scope.path + "/"
+                        alternatives.append("(path >= ? AND path < ?)")
+                        _ = arguments.append(contentsOf: [prefix, String(prefix.dropLast()) + "0"])
+                    } else {
+                        alternatives.append("directory = ?")
+                        _ = arguments.append(contentsOf: [scope.path])
+                    }
+                }
+                conditions.append("(" + alternatives.joined(separator: " OR ") + ")")
+            }
+            // Members go along through the foreign key; changesCount only counts the files
+            try db.execute(sql: "DELETE FROM document WHERE " + conditions.joined(separator: " AND "),
+                           arguments: arguments)
+            let deleted = db.changesCount
 
-            let deleted = try Int.fetchOne(
-                db, sql: "SELECT count(*) FROM document WHERE sourceId = ? AND seenScanId < ?",
-                arguments: [sourceId, scanId]) ?? 0
-            try db.execute(sql: "DELETE FROM document WHERE sourceId = ? AND seenScanId < ?",
-                           arguments: [sourceId, scanId])
+            if let root = try String.fetchOne(db, sql: "SELECT root FROM source WHERE id = ?", arguments: [sourceId]) {
+                try Self.rebuildFolders(db, sourceId: sourceId, root: root)
+            }
 
             var counters = counters
             counters.deleted = deleted
             try Self.updateScan(db, scanId: scanId, status: .completed, counters: counters)
             try db.execute(sql: "UPDATE source SET lastScanAt = ?, lastScanId = ? WHERE id = ?",
                            arguments: [Date(), scanId, sourceId])
+            if let indexedOptions {
+                let json = String(decoding: try JSONEncoder().encode(indexedOptions), as: UTF8.self)
+                try db.execute(sql: "UPDATE source SET indexedOptions = ? WHERE id = ?", arguments: [json, sourceId])
+            }
             return deleted
+        }
+    }
+
+    /// Recomputes the folder table of a source from the directories of its files: every folder
+    /// holding files, directly or below, with recursive counts and sizes.
+    static func rebuildFolders(_ db: Database, sourceId: Int64, root: String) throws {
+        try db.execute(sql: "DELETE FROM folder WHERE sourceId = ?", arguments: [sourceId])
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT directory, count(*) AS n, coalesce(sum(size), 0) AS total FROM document
+            WHERE sourceId = ? AND parentId IS NULL GROUP BY directory
+            """, arguments: [sourceId])
+
+        var totals: [String: (count: Int, size: Int64)] = [:]
+        for row in rows {
+            guard var directory: String = row["directory"], directory == root || directory.hasPrefix(root) else {
+                continue
+            }
+            let count: Int = row["n"]
+            let size: Int64 = row["total"]
+            while true {
+                totals[directory, default: (0, 0)].count += count
+                totals[directory, default: (0, 0)].size += size
+                if directory.count <= root.count { break }
+                directory = (directory as NSString).deletingLastPathComponent
+            }
+        }
+
+        let insert = try db.cachedStatement(
+            sql: "INSERT INTO folder (sourceId, path, parent, name, count, size) VALUES (?, ?, ?, ?, ?, ?)")
+        for (path, total) in totals {
+            let parent = path == root ? nil : (path as NSString).deletingLastPathComponent
+            try insert.execute(arguments: [sourceId, path, parent, (path as NSString).lastPathComponent,
+                                           total.count, total.size])
         }
     }
 

@@ -113,6 +113,33 @@ func parseBytes(_ data: Data, name: String, options: ScanOptions = Fixture.optio
         #expect(documents[0].content == "docs/notes.md\ndocs/说明.txt")
     }
 
+    @Test func membersCanBeReadBackOut() throws {
+        let tar = Fixture.url("archive.tar.gz").path
+        #expect(String(decoding: try ArchiveMemberReader.data(forPath: tar + "#/docs/说明.txt"), as: UTF8.self)
+                == "压缩包里的中文说明 archive readme")
+        // Nested, then a member of a plain compressed file, then a legacy-encoded name
+        #expect(String(decoding: try ArchiveMemberReader.data(forPath: tar + "#/inner.zip#/deep.txt"), as: UTF8.self)
+                == "nested zip inside tar mentions narwhal")
+        #expect(String(decoding: try ArchiveMemberReader.data(forPath: Fixture.url("notes.txt.gz").path + "#/notes.txt"),
+                       as: UTF8.self) == "single gzip file mentions pelican")
+        #expect(String(decoding: try ArchiveMemberReader.data(forPath: Fixture.url("gbk-names.zip").path + "#/中文名.txt"),
+                       as: UTF8.self) == "gbk named member mentions albatross")
+
+        // Every member the extractor indexes can be read back by the path it was indexed under
+        for name in ["archive.7z", "archive.rar", "archive.tar.gz"] {
+            for document in try parseFile(name).map(\.document) where document.parentPath != nil {
+                #expect(try ArchiveMemberReader.data(forPath: document.path).count == document.size)
+            }
+        }
+
+        #expect(throws: ExtractionError.self) {
+            _ = try ArchiveMemberReader.data(forPath: tar + "#/missing.txt")
+        }
+        let url = try ArchiveMemberReader.extractToTemporaryFile(path: tar + "#/docs/notes.md", documentId: 42)
+        #expect(url.lastPathComponent == "notes.md")
+        #expect(try String(contentsOf: url, encoding: .utf8) == "tar member mentions walrus")
+    }
+
     @Test func brokenArchivesAreStillIndexed() {
         let documents = parseBytes(Data("definitely not 7z".utf8), name: "broken.7z")
         #expect(documents.count == 1)

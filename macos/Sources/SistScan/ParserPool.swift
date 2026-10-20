@@ -66,6 +66,9 @@ public enum WorkerLocator {
         if let executable = Bundle.main.executableURL {
             let directory = executable.resolvingSymlinksInPath().deletingLastPathComponent()
             candidates.append(directory.appendingPathComponent(executableName))
+            // The command line tool in Sist.app/Contents/Helpers uses the app's
+            candidates.append(directory.deletingLastPathComponent().appendingPathComponent("MacOS")
+                .appendingPathComponent(executableName))
             // A login item in Sist.app/Contents/Library/LoginItems/X.app/Contents/MacOS uses the app's
             let enclosingApp = directory.deletingLastPathComponent().deletingLastPathComponent()
                 .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

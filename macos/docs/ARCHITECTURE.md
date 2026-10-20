@@ -384,7 +384,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 - **不开 App Sandbox**：可以直接读用户添加的任意路径，能启动 `sist-worker` 子进程，不需要 security-scoped bookmark
 - **TCC**：首次访问“文稿”“桌面”“下载”、外置磁盘、网络磁盘时系统会弹窗，`Info.plist` 已写好对应的用途说明；子进程的访问归属到 App 本身。要索引“邮件”“信息”等，需要用户授予“完全磁盘访问权限”（设置页有直达按钮）
 - **签名与公证**：`scripts/make-app.sh` 构建 arm64 + x86_64 通用二进制，组装 `.app`，先签内部可执行文件再签 App，启用 Hardened Runtime；设置 `NOTARY_PROFILE` 时自动 `notarytool submit --wait` 并 `stapler staple`
-- **命令行工具**：随 App 打包在 `Contents/MacOS/sist`，可软链接到 `/usr/local/bin`
+- **命令行工具**：随 App 打包在 `Contents/Helpers/sist`（放在 `Contents/MacOS` 里会和 App 本身的可执行文件 `Sist` 在不区分大小写的卷上成为同一个文件），可软链接到 `/usr/local/bin`
 
 ---
 

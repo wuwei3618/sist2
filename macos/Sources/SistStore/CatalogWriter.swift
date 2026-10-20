@@ -93,6 +93,7 @@ public struct CatalogWriter: Sendable {
             let insertFTS = try db.cachedStatement(
                 sql: "INSERT INTO document_fts (rowid, name, title, content, path) VALUES (?, ?, ?, ?, ?)")
             let deleteThumbnails = try db.cachedStatement(sql: "DELETE FROM thumbnail WHERE documentId = ?")
+            let deleteEmbeddings = try db.cachedStatement(sql: "DELETE FROM embedding WHERE documentId = ?")
             let insertThumbnail = try db.cachedStatement(
                 sql: "INSERT INTO thumbnail (documentId, num, data) VALUES (?, ?, ?)")
 
@@ -149,6 +150,8 @@ public struct CatalogWriter: Sendable {
                 try insertFTS.execute(arguments: [id, text.name, text.title, text.content, text.path])
 
                 try deleteThumbnails.execute(arguments: [id])
+                // Its vectors described the previous version; the semantic indexer makes new ones
+                try deleteEmbeddings.execute(arguments: [id])
                 for (number, data) in result.thumbnails.enumerated() {
                     try insertThumbnail.execute(arguments: [id, number, data])
                 }

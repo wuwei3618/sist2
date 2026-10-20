@@ -211,6 +211,37 @@ enum Schema {
             try db.execute(sql: "ALTER TABLE document ADD COLUMN finderTags TEXT")
         }
 
+        migrator.registerMigration("v7") { db in
+            try db.execute(sql: """
+                -- Semantic search: a vector per passage of text (kind 'text'), or per image ('image'),
+                -- quantized (VectorCodec). Vectors of different models are never compared.
+                CREATE TABLE embedding (
+                    documentId INTEGER NOT NULL REFERENCES document(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    chunk INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    vector BLOB NOT NULL,
+                    PRIMARY KEY (documentId, kind, chunk)
+                ) WITHOUT ROWID;
+                CREATE INDEX embedding_model ON embedding(model);
+
+                -- The parse (scan id) each document was last analysed for: a document parsed again
+                -- is analysed again
+                CREATE TABLE embedding_status (
+                    documentId INTEGER NOT NULL REFERENCES document(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    scanId INTEGER NOT NULL,
+                    PRIMARY KEY (documentId, kind)
+                ) WITHOUT ROWID;
+
+                -- Settings the app and the background agent share
+                CREATE TABLE setting (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                ) WITHOUT ROWID;
+                """)
+        }
+
         return migrator
     }
 

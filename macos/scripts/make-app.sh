@@ -38,8 +38,11 @@ universal() {
 universal SistApp "$APP/Contents/MacOS/Sist"
 # Found by WorkerLocator through Bundle.main.url(forAuxiliaryExecutable:)
 universal sist-worker "$APP/Contents/MacOS/sist-worker"
-# The command line tool ships inside the app: ln -s /Applications/Sist.app/Contents/MacOS/sist /usr/local/bin/sist
-universal sist "$APP/Contents/MacOS/sist"
+# The command line tool ships inside the app, in Helpers: next to the app's own executable "Sist"
+# it would be the same file on a case-insensitive volume.
+#   ln -s /Applications/Sist.app/Contents/Helpers/sist /usr/local/bin/sist
+mkdir -p "$APP/Contents/Helpers"
+universal sist "$APP/Contents/Helpers/sist"
 # The background agent, a login item registered by the app with SMAppService. It uses the app's
 # sist-worker (WorkerLocator looks in the enclosing app).
 AGENT="$APP/Contents/Library/LoginItems/SistAgent.app"
@@ -69,9 +72,13 @@ SIGN_FLAGS=(--force --options runtime --sign "$SIGN_IDENTITY")
 if [ "$SIGN_IDENTITY" != "-" ]; then
     SIGN_FLAGS+=(--timestamp)
 fi
-codesign "${SIGN_FLAGS[@]}" "$APP/Contents/MacOS/sist-worker"
-codesign "${SIGN_FLAGS[@]}" "$APP/Contents/MacOS/sist"
+# The app's executable must be the app (and not, say, a tool of the same name in another case)
+otool -L "$APP/Contents/MacOS/Sist" | grep -q SwiftUI || { echo "Contents/MacOS/Sist is not the app" >&2; exit 1; }
+
+# Inside out: the nested app before anything else in the bundle
 codesign "${SIGN_FLAGS[@]}" "$AGENT"
+codesign "${SIGN_FLAGS[@]}" "$APP/Contents/MacOS/sist-worker"
+codesign "${SIGN_FLAGS[@]}" "$APP/Contents/Helpers/sist"
 codesign "${SIGN_FLAGS[@]}" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 

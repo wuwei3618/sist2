@@ -92,6 +92,8 @@ public enum MetaKey {
     public static let emailCc = "email_cc"
     /// ISO 8601
     public static let emailDate = "email_date"
+    /// What an image shows, as Vision classifies it
+    public static let imageLabels = "image_labels"
 }
 
 /// What a parser produces for one file or archive member.

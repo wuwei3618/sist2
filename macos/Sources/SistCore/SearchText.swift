@@ -134,6 +134,21 @@ public enum SearchText {
         }
     }
 
+    /// The full-text row of a document of a source rooted at `root`. The path column holds the
+    /// folders between the root and the document only: the name has its own column, and the root
+    /// itself would match every document.
+    public static func indexedText(for document: ParsedDocument, root: String) -> IndexedText {
+        let rootPrefix = root == "/" ? "/" : root + "/"
+        var directory = (document.path as NSString).deletingLastPathComponent
+        if directory.hasPrefix(rootPrefix) {
+            directory.removeFirst(rootPrefix.count)
+        } else if directory + "/" == rootPrefix {
+            directory = ""
+        }
+        return IndexedText(name: indexable(document.name), title: document.title.map(indexable),
+                           content: document.content.map(indexable), path: indexable(directory))
+    }
+
     public static func containsTokenCharacter(_ text: String) -> Bool {
         text.unicodeScalars.contains { isTokenCharacter($0) }
     }

@@ -1,4 +1,5 @@
 import GRDB
+import SistCore
 
 /// One database holds everything sist2 splits between the scan's index file and the separate
 /// search index: with a single backend there is nothing to gain from keeping them apart, and
@@ -133,6 +134,42 @@ enum Schema {
             }
         }
 
+        migrator.registerMigration("v3") { db in
+            // The FTS table kept its own copy of the rewritten text, which nothing reads: excerpts
+            // come from `content`. Contentless, it takes about a third of the space. Deleting rows
+            // from a contentless table needs SQLite 3.43 (macOS 14); older ones keep the table.
+            let version = try String.fetchOne(db, sql: "SELECT sqlite_version()") ?? ""
+            guard supportsContentlessDelete(version: version) else { return }
+            try db.execute(sql: """
+                DROP TABLE document_fts;
+                CREATE VIRTUAL TABLE document_fts USING fts5(
+                    name, title, content, path,
+                    tokenize = 'unicode61 remove_diacritics 2',
+                    content = '', contentless_delete = 1
+                );
+                INSERT INTO document_fts(document_fts, rank) VALUES ('rank', 'bm25(8.0, 8.0, 3.0, 5.0)');
+                """)
+            let insert = try db.makeStatement(
+                sql: "INSERT INTO document_fts (rowid, name, title, content, path) VALUES (?, ?, ?, ?, ?)")
+            let rows = try Row.fetchCursor(db, sql: """
+                SELECT d.id, d.path, d.name, d.ext, d.size, d.mtime, d.title, s.root, c.text
+                FROM document d JOIN source s ON s.id = d.sourceId LEFT JOIN content c ON c.documentId = d.id
+                """)
+            while let row = try rows.next() {
+                let document = ParsedDocument(path: row["path"], name: row["name"], ext: row["ext"], mime: nil,
+                                              size: row["size"], mtime: row["mtime"], title: row["title"],
+                                              content: row["text"])
+                let text = SearchText.indexedText(for: document, root: row["root"])
+                try insert.execute(arguments: [row["id"] as Int64, text.name, text.title, text.content, text.path])
+            }
+        }
+
         return migrator
+    }
+
+    static func supportsContentlessDelete(version: String) -> Bool {
+        let parts = version.split(separator: ".").compactMap { Int($0) }
+        guard parts.count >= 2 else { return false }
+        return (parts[0], parts[1]) >= (3, 43)
     }
 }

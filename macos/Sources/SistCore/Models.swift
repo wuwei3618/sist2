@@ -129,11 +129,23 @@ public struct ParsedDocument: Codable, Sendable, Hashable {
 public struct ParseResult: Sendable {
     public var document: ParsedDocument
     public var thumbnails: [Data]
+    /// The full-text columns, prepared ahead of the write so the single writer does not spend
+    /// its time rewriting text (see SearchText.indexedText)
+    public var indexedText: IndexedText?
 
     public init(document: ParsedDocument, thumbnails: [Data] = []) {
         self.document = document
         self.thumbnails = thumbnails
     }
+}
+
+/// The text of a document's full-text index row, already rewritten by SearchText.
+public struct IndexedText: Sendable, Hashable {
+    public var name: String
+    public var title: String?
+    public var content: String?
+    /// Folders between the source root and the document
+    public var path: String
 }
 
 /// How archives are handled, as sist2's `--archive` option.

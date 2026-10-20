@@ -28,7 +28,8 @@ public struct SearchQuery: Sendable, Hashable {
     public var sort: SearchSort = .relevance
     public var limit = 100
     public var offset = 0
-    /// Count matches per category (for the sidebar), ignoring the category filter
+    /// Count matches per category (for the sidebar), ignoring the category filter, and in total.
+    /// Further pages of the same search can skip it: `total` is then only a lower bound.
     public var countCategories = true
 
     public init(text: String = "") {
@@ -139,10 +140,10 @@ extension Catalog {
                 ORDER BY \(order), d.id LIMIT ? OFFSET ?
                 """, arguments: filteredArguments + [query.limit, query.offset])
 
-            let total = try Int.fetchOne(db, sql: "SELECT count(*) FROM \(from) \(filtered)",
-                                         arguments: filteredArguments) ?? 0
-
+            // One pass over the matches gives the facets and, summed over the categories the filter
+            // keeps, the total: a broad full-text query is not walked twice more
             var categoryCounts: [MimeCategory: Int] = [:]
+            var total = query.offset + documents.count
             if query.countCategories {
                 let rows = try Row.fetchAll(db, sql: """
                     SELECT d.category AS category, count(*) AS n FROM \(from) \(whereClause(nil)) GROUP BY d.category
@@ -152,11 +153,15 @@ extension Catalog {
                         categoryCounts[category] = row["n"]
                     }
                 }
+                total = categoryCounts
+                    .filter { query.categories.isEmpty || query.categories.contains($0.key) }
+                    .values.reduce(0, +)
             }
 
-            // Excerpts are cut from the stored text, around the terms that were typed
+            // Excerpts are cut from the stored text, around the terms that were typed (without
+            // terms there is nothing to show one for)
             var contents: [Int64: String] = [:]
-            if !documents.isEmpty {
+            if !documents.isEmpty && !parsed.highlightTerms.isEmpty {
                 let ids = documents.map(\.id)
                 let rows = try Row.fetchAll(
                     db, sql: "SELECT documentId, substr(text, 1, 100000) AS text FROM content WHERE documentId IN (\(Self.placeholders(ids.count)))",

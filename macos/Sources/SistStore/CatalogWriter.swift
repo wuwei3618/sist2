@@ -60,7 +60,6 @@ public struct CatalogWriter: Sendable {
     /// Writes parse results in one transaction. Archive members must come after their archive.
     public func write(_ results: [ParseResult], source: Source, scanId: Int64) async throws {
         guard !results.isEmpty else { return }
-        let rootPrefix = source.root == "/" ? "/" : source.root + "/"
 
         try await pool.write { db in
             let findParent = try db.cachedStatement(sql: "SELECT id FROM document WHERE sourceId = ? AND path = ?")
@@ -122,23 +121,9 @@ public struct CatalogWriter: Sendable {
                     try deleteContent.execute(arguments: [id])
                 }
 
-                // Directories above the document, relative to the source: `name` is its own column
-                // and the root itself would match every document
-                var relativeDirectory = (doc.path as NSString).deletingLastPathComponent
-                if relativeDirectory.hasPrefix(rootPrefix) {
-                    relativeDirectory.removeFirst(rootPrefix.count)
-                } else if relativeDirectory + "/" == rootPrefix {
-                    relativeDirectory = ""
-                }
-
+                let text = result.indexedText ?? SearchText.indexedText(for: doc, root: source.root)
                 try deleteFTS.execute(arguments: [id])
-                try insertFTS.execute(arguments: [
-                    id,
-                    SearchText.indexable(doc.name),
-                    doc.title.map(SearchText.indexable),
-                    doc.content.map(SearchText.indexable),
-                    SearchText.indexable(relativeDirectory),
-                ])
+                try insertFTS.execute(arguments: [id, text.name, text.title, text.content, text.path])
 
                 try deleteThumbnails.execute(arguments: [id])
                 for (number, data) in result.thumbnails.enumerated() {

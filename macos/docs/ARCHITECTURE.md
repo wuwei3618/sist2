@@ -141,13 +141,14 @@ sist2 把扫描结果（索引库）和搜索索引（FTS 库 / ES）分成两�
 
 | 表 | 说明 |
 |---|---|
-| `source` | 被索引的文件夹（相当于 sist2 的一个 index）：名称、根路径、扫描选项（JSON）、最后扫描时间 |
+| `source` | 被索引的文件夹（相当于 sist2 的一个 index）：名称、根路径、扫描选项（JSON）、最后扫描时间、`indexedOptions`（最后一次完整扫描所用的选项，见第 6 节“重建”） |
 | `scan` | 每次扫描一行，id 即“版本号”；记录状态（running/completed/cancelled/failed）和计数 |
-| `document` | 每个文件 / 压缩包成员一行：路径、名称、扩展名、MIME、类别、大小、mtime、标题、元数据 JSON、校验和、解析错误、缩略图数量、`scanId`（最后一次解析它的扫描）、`seenScanId`（最后一次在磁盘上看到它的扫描）。`(sourceId, path)` 唯一；`parentId` 指向所在压缩包，级联删除 |
+| `document` | 每个文件 / 压缩包成员一行：路径、名称、扩展名、MIME、类别、大小、mtime、标题、元数据 JSON、校验和、解析错误、缩略图数量、`scanId`（最后一次解析它的扫描）、`seenScanId`（最后一次在磁盘上看到它的扫描）。`directory`（磁盘上文件所在的目录，压缩包成员为空）。`(sourceId, path)` 唯一；`parentId` 指向所在压缩包，级联删除 |
 | `content` | 正文（截断到 `contentSizeLimit`），用于摘要和预览 |
 | `thumbnail` | 缩略图（JPEG，有透明度时 PNG），`WITHOUT ROWID` |
 | `tag` | 手动标签 |
-| `document_fts` | FTS5 虚表：name、title、content、path（相对源根目录的上级目录），存的是 CJK 改写后的文本；`bm25(8, 8, 3, 5)` 持久化为默认 rank |
+| `folder` | 每个含有文件的目录及其下（递归）的文件数和总大小，每次扫描结束时重建，驱动侧边栏的文件夹树（sist2 的 `path_index`） |
+| `document_fts` | FTS5 虚表：name、title、content、path（相对源根目录的上级目录），写入的是 CJK 改写后的文本；`bm25(8, 8, 3, 5)` 持久化为默认 rank。和 sist2 一样是 contentless 表（`content=''`），不另存一份文本，摘要从 `content` 表切；删除行需要 SQLite 3.43 的 `contentless_delete`（macOS 14 起），更老的 SQLite 保留普通 FTS 表 |
 
 触发器：删除 `document` 行（包括外键级联删除的子文档）时同步删除 FTS 行。
 
@@ -168,7 +169,7 @@ sequenceDiagram
         DB-->>C: 新增或变化的文件
         C->>P: parse(entry)，同时在途 ≤ 2×并发数
         P-->>C: 文档（压缩包先占位，再成员，再完整记录）
-        C->>DB: 每 64 条结果一个事务写入
+        C-->>DB: 攒满 512 条 / 32 MB / 2 秒写一个事务（后台进行，同一时间只有一个写）
     end
     C->>DB: finishScan
 ```
@@ -178,17 +179,21 @@ sequenceDiagram
 1. `markUnchanged`：对每个遍历到的顶层文件执行
    `UPDATE document SET seenScanId = :scan WHERE sourceId = ? AND path = ? AND mtime = ? AND size = ?`，
    命中（`changes = 1`）说明没变，不解析；没命中的才交给解析池。
-2. `write`：解析结果按 `(sourceId, path)` upsert，`scanId = seenScanId = 当前扫描`，id 保持不变，所以标签不会丢。
-3. `finishScan`：
-   - 未变化的压缩包没有被解析，里面的成员也就没人标记。用递归 CTE 从“本次看到但未重新解析”（`seenScanId = :scan AND scanId < :scan`）的文档出发，把所有后代标记为已见。
-   - 删除本源中 `seenScanId < :scan` 的文档；外键级联删除成员、正文、缩略图、标签，触发器清理 FTS。
+2. `write`：解析结果按 `(sourceId, path)` upsert，`scanId = seenScanId = 当前扫描`，id 保持不变，所以标签不会丢。重新解析的文件先删掉它原有的压缩包成员（本次解析会重新发出现有的成员），压缩包里被删掉的文件就这样消失。
+3. `finishScan`：删除本源中本次没有看到的磁盘文件（`parentId IS NULL AND seenScanId < :scan`）；外键级联删除它们的成员、正文、缩略图、标签，触发器清理 FTS。未变化的压缩包既没被解析也没被重新标记，它的成员原样保留。最后重建 `folder` 表。
 4. **扫描被取消或失败时不执行第 3 步**，不会因为没遍历完而误删文件；下一次扫描从头再来。
+
+**重建**：选项里有一部分只影响“走哪些文件”（深度、排除规则、隐藏文件、文件包、并发、超时），改了以后下一次遍历自然会增删文件；其余的影响“怎么解析”（OCR、语言、正文上限、缩略图、压缩包模式、校验和……），改了以后已有文件必须重新解析才会生效。`source.indexedOptions` 记录最后一次完整扫描所用的选项，下一次扫描发现解析相关的选项变了，就跳过增量比对、重新解析全部文件（`ScanOptions.changesExtraction`，新增的选项默认算作解析相关）。也可以手动“重建索引”。
+
+**局部扫描**：扫描可以只限于若干目录（`ScanScope`：一个目录，含或不含子目录）。遍历只走这些目录，删除也只发生在其中（非递归时按 `document.directory` 匹配，递归时按路径前缀）。目录本身仍要遵守源的规则：从源根到它的路径上有隐藏、被忽略、被排除的目录，或超出深度限制，就不遍历；文件包内部的变化换成扫描包所在的目录；已不存在的目录则删除其中原有的文档。重建和源的第一次扫描总是覆盖整个源。
 
 **压缩包成员的顺序**：成员行需要引用父文档 id，所以 `DocumentParser` 在发出第一个成员之前先发出一次压缩包的占位记录，全部成员之后再发出完整记录（upsert 覆盖）。嵌套压缩包同理，最大嵌套深度 8。
 
 **反压**：遍历是拉取式迭代器，每批 256 个；在途解析任务超过 2 倍并发数时先收结果再继续遍历，内存不会随目录规模增长。
 
-**自动更新**：App 用 FSEvents 监听每个源（2 秒合并），有变化后 10 秒再增量扫描；扫描中又发生变化则在结束后补一次。catalog 所在目录和隐藏文件的事件会被忽略，避免自己的写入触发扫描。由于未变化文件只做一次 `UPDATE`，几十万文件的增量扫描主要耗时在遍历上。
+**自动更新**：App 用 FSEvents（文件级事件）监听每个源，2 秒合并一次，10 秒内的变化攒在一起做一次局部扫描（`ChangeScopes`）：变化的文件 → 扫描它所在的目录（不含子目录，增、改、删都能发现）；变化的目录（移入、移出、改名）→ 扫描它及其下全部；FSEvents 丢了事件或根目录变了 → 扫描整个源。扫描进行中的变化在扫描结束后补扫。catalog 所在目录和隐藏文件的事件会被忽略，避免自己的写入触发扫描。
+
+**写入**：只有一个写入者。解析结果攒够 512 条、32 MB 或 2 秒就交给后台写一个事务，写的同时继续给解析器派活；下一次写入要等上一次完成，所以写入仍然串行、内存有上限。CJK 改写这类 CPU 工作在解析任务里并行做完，不占写入者的时间。FTS5 每次提交都会落一个段，大事务能明显减少段合并（同样 1 万个文档：64 条一个事务 1.95 秒，1024 条 1.03 秒）。
 
 ---
 
@@ -284,11 +289,14 @@ name:报告           只在某一列搜：name、title、content、path
 └────────────┴──────────────────────────────┴────────────────────┘
 ```
 
-- 三栏 `NavigationSplitView`：侧边栏（文件夹、类型分面、标签，点击切换筛选）、结果（列表 / 缩略图网格，滚动到底自动加载下一页）、详情（大缩略图、元数据、标签编辑、高亮正文）
-- 空格键或“快速查看”调用系统 QuickLook；双击打开，右键可在 Finder 中显示、拷贝路径
-- 工具栏：搜索框（输入防抖 180 ms）、显示方式、排序、统计窗口
+- 三栏 `NavigationSplitView`：侧边栏（源 → 可展开的文件夹树，带递归文件数；类型分面；标签；点击切换筛选）、结果（列表 / 缩略图网格，滚动到底自动加载下一页）、详情（大缩略图、元数据、标签编辑、高亮正文）
+- 结果上方以可删除的小标签显示当前生效的筛选（源、文件夹、类型、大小、时间、标签）
+- 详情页列出压缩包内容，可以点进成员（包括嵌套的压缩包）再返回；成员显示“位于压缩包 xxx”的链接
+- 空格键或“快速查看”调用系统 QuickLook；双击打开，右键可在 Finder 中显示、拷贝路径。压缩包里的文件会先解压到临时目录再打开或预览（`ArchiveMemberReader`，支持多层嵌套）
+- 工具栏：搜索框（输入防抖 180 ms）、显示方式、排序、筛选（大小预设；修改时间预设 + 自定义起止日期）、统计窗口
+- 右键菜单：源可以“立即扫描”“重建索引”；文件夹可以“重新扫描此文件夹”
 - 统计窗口（Swift Charts）：按类型占用空间、大小分布、修改年份、最大的文件夹、常见格式
-- 设置：默认扫描选项、每个文件夹的选项（OCR、语言、缩略图、正文上限、压缩包模式、排除规则、并发、超时）、权限说明
+- 设置：默认扫描选项、每个文件夹的选项（OCR、语言、缩略图、正文上限、压缩包模式、排除规则、并发、超时；改动需要重新解析全部文件时会提示）、“重建索引”、权限说明
 
 ---
 
@@ -335,17 +343,35 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 | 没有声明编码的日文 Shift-JIS、繁体 Big5 文件名会解错 | 无法可靠区分，优先按简体中文 GB18030 解码 | 设置中提供文件名编码选项 |
 | mobi、azw3、djvu、pst、mbox 未解析正文 | 尚未实现 | 阶段二 |
 | iWork（pages/numbers/key）无正文 | 私有格式（IWA/protobuf） | 阶段三：读取内置预览 PDF 或 Spotlight 导入器 |
-| FTS 存储改写后的文本，CJK 正文约 2.3 倍体积 | 系统 SQLite 版本不确定是否支持 contentless_delete | 阶段二：打包较新的 SQLite 后改为 contentless 表 |
+| macOS 13 及更老的 SQLite（< 3.43）用不了 contentless FTS，索引大一些 | `contentless_delete` 需要 3.43 | 部署目标是 macOS 14，实际不会遇到 |
+| 极宽泛的查询（命中大部分文档）要按相关度给全部命中打分，10 万文档约 0.2 秒，百万级约 2 秒 | bm25 排序需要遍历全部命中 | 命中过多时改按时间排序或只对前 N 个打分 |
 | 进程内模式无法中止卡住的解析 | 线程不能被安全杀死 | 正式包始终使用 sist-worker |
 | 模糊搜索（sist2 的 spellfix） | 系统 SQLite 未编译 spellfix | 阶段二：基于 trigram 表的建议 |
 
 ---
 
-## 13. 性能考虑
+## 13. 性能
 
+实测（Linux，4 核虚拟机，release 构建，10 万个 1–3 KB 的中英文混合文本文件，约 1000 个目录；macOS 上解析器不同，但流水线和数据库部分相同）：
+
+| 场景 | 结果 |
+|---|---|
+| 首次扫描（sist-worker 子进程） | 59 秒（约 1700 文件/秒），峰值内存 168 MB |
+| 首次扫描（进程内解析，无崩溃隔离） | 55 秒：子进程隔离的代价约 7% |
+| catalog 大小 | 324 MB（原文 395 MB，其中正文表 ~110 MB） |
+| 无变化重扫 | 1.9 秒 |
+| 1% 文件修改 + 100 个删除后重扫 | 2.9 秒 |
+| 局部扫描一个 100 个文件的目录 | 0.2 秒 |
+| 罕见词 / 精确短语 / 文件名搜索 | 4–5 ms / 141 ms（5383 个命中）/ 35 ms |
+| 命中 90% 文档的单词搜索 | 217 ms（瓶颈是给 9 万个命中打 bm25 分） |
+| 只按文件夹筛选（无关键词） | 130 ms（App 里同时限定了源，能用上 `(sourceId, path)` 索引） |
+
+这一轮优化前首次扫描是 92 秒、catalog 564 MB。剖析发现 84% 的时间花在唯一的写入者上，且写入时解析器空等。改动：FTS 改为 contentless（体积 -43%）、写入攒大事务（512 条 / 32 MB / 2 秒）、CJK 改写挪到并行的解析任务、写入与解析重叠、搜索的总数直接由分面计数求和（少扫一遍命中）、没有关键词时不切摘要。
+
+其他：
 - 遍历用 `readdir` + `lstat`，不经过 `FileManager` 的属性字典
 - 增量比对每文件一条带索引的 `UPDATE`，256 个一个事务
-- 解析结果 64 条一个事务；`document` 行不含大字段
+- `document` 行不含大字段；WAL + `synchronous=NORMAL`
 - 正文默认上限 32K 字符（同 sist2 的 `--content-size`），文本类文件只读需要的字节
 - 缩略图默认 552 px（同 sist2），JPEG 质量 0.7；界面侧有 `NSCache`
 - 搜索分页 100 条，摘要只为当前页计算
@@ -363,7 +389,11 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 - [x] zip 中文文件名编码修正
 - [x] libarchive：tar/gz/bz2/xz/zstd/7z/rar/iso/cab，cbr 封面
 - [x] 旧版 Office：xls、ppt
-- [ ] 详情页“在压缩包中浏览”（`Catalog.children(of:)` 已有）
+- [x] 详情页“在压缩包中浏览”，压缩包内文件可直接打开 / 预览
+- [x] 文件夹树、大小和时间筛选、筛选标签
+- [x] 解析相关的设置改变后自动重建；手动重建索引
+- [x] FSEvents 只扫描变化的目录
+- [x] 10 万文件基准测试与写入路径优化
 - [ ] 菜单栏常驻 + 全局快捷键唤出搜索面板（类似 Spotlight/Alfred）
 
 **阶段二（格式与后台）**
@@ -383,7 +413,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 | 部分 | 验证方式 |
 |---|---|
-| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，64 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时） |
+| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，76 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
 | PDFKit/ImageIO/Vision/AVFoundation/CoreText/QuickLook 解析器、SwiftUI App | macOS 15 runner 上编译通过，`make-app.sh` 打出的 arm64 + x86_64 通用 `Sist.app` 通过 `codesign --verify --strict` |
 | 界面交互、各 Apple 框架解析器对真实文件的效果 | 尚未验证：CI 只编译不运行界面，也没有 PDF/图片/音视频的样例文件测试。需要在 Mac 上实际走查 |
 

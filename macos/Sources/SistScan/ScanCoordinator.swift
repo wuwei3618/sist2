@@ -44,7 +44,11 @@ public struct ScanCoordinator: Sendable {
     public let isolation: ParserIsolation
 
     static let walkBatchSize = 256
-    static let writeBatchSize = 64
+    /// Results are written in large transactions (FTS5 flushes a segment per commit), but at
+    /// least every couple of seconds, and before they hold too much memory
+    static let writeBatchSize = 512
+    static let writeBatchBytes = 32 * 1024 * 1024
+    static let writeInterval: TimeInterval = 2
 
     public init(catalog: Catalog, isolation: ParserIsolation = .automatic) {
         self.catalog = catalog
@@ -129,9 +133,26 @@ public struct ScanCoordinator: Sendable {
         } ?? [(source.root, source.options)]
 
         var pending: [ParseResult] = []
+        var pendingBytes = 0
+        var lastFlush = Date()
+        // The write in progress. Writing overlaps parsing, but writes still happen one at a time,
+        // in order: the next one waits for this one
+        var writing: Task<Void, Error>?
         var inFlight = 0
         var walkErrors = 0
         var lastReport = Date.distantPast
+
+        func flush(force: Bool = false) async throws {
+            guard !pending.isEmpty, force || pending.count >= Self.writeBatchSize
+                || pendingBytes >= Self.writeBatchBytes || Date().timeIntervalSince(lastFlush) >= Self.writeInterval
+            else { return }
+            try await writing?.value
+            let batch = pending
+            pending.removeAll(keepingCapacity: true)
+            pendingBytes = 0
+            lastFlush = Date()
+            writing = Task { try await writer.write(batch, source: source, scanId: scanId) }
+        }
 
         func report(force: Bool = false) {
             guard let progress, force || Date().timeIntervalSince(lastReport) > 0.25 else { return }
@@ -159,60 +180,73 @@ public struct ScanCoordinator: Sendable {
                 results.insert(Self.fallbackResult(for: job.entry, error: job.error ?? "No document produced"), at: 0)
             }
             pending += results
+            pendingBytes += results.reduce(0) { total, result in
+                total + (result.document.content?.utf8.count ?? 0) + result.thumbnails.reduce(0) { $0 + $1.count }
+            }
             state.currentPath = job.entry.path
         }
 
-        try await withThrowingTaskGroup(of: ParseJobResult.self) { group in
-            for target in targets {
-                let walker: DirectoryWalker
-                do {
-                    walker = try DirectoryWalker(root: target.root, options: target.options, ignoreList: ignoreList) {
-                        path, message in log?(LogMessage(level: .warning, path: path, message: message))
+        do {
+            try await withThrowingTaskGroup(of: ParseJobResult.self) { group in
+                for target in targets {
+                    let walker: DirectoryWalker
+                    do {
+                        walker = try DirectoryWalker(root: target.root, options: target.options, ignoreList: ignoreList) {
+                            path, message in log?(LogMessage(level: .warning, path: path, message: message))
+                        }
+                    } catch where scopes != nil {
+                        // The directory is gone: finishScan deletes what the catalog had in it
+                        continue
                     }
-                } catch where scopes != nil {
-                    // The directory is gone: finishScan deletes what the catalog had in it
-                    continue
-                }
-                defer { walkErrors += walker.errorCount }
+                    defer { walkErrors += walker.errorCount }
 
-                while true {
-                    try Task.checkCancellation()
-                    let batch = walker.next(batch: Self.walkBatchSize)
-                    if batch.isEmpty { break }
-                    counters.walked += batch.count
+                    while true {
+                        try Task.checkCancellation()
+                        let batch = walker.next(batch: Self.walkBatchSize)
+                        if batch.isEmpty { break }
+                        counters.walked += batch.count
 
-                    let changed = rebuild
-                        ? batch : try await writer.markUnchanged(batch, sourceId: source.id, scanId: scanId)
-                    counters.unchanged += batch.count - changed.count
+                        let changed = rebuild
+                            ? batch : try await writer.markUnchanged(batch, sourceId: source.id, scanId: scanId)
+                        counters.unchanged += batch.count - changed.count
 
-                    for entry in changed {
-                        // Keep every parser busy, without queueing the whole tree
-                        while inFlight >= pool.capacity * 2, let job = try await group.next() {
-                            absorb(job)
+                        for entry in changed {
+                            // Keep every parser busy, without queueing the whole tree
+                            while inFlight >= pool.capacity * 2, let job = try await group.next() {
+                                absorb(job)
+                            }
+                            try await flush()
+                            let root = source.root
+                            group.addTask {
+                                var job = await pool.parse(entry)
+                                // The rewriting for the full-text index runs here, in parallel
+                                for index in job.results.indices {
+                                    job.results[index].indexedText = SearchText.indexedText(
+                                        for: job.results[index].document, root: root)
+                                }
+                                return job
+                            }
+                            inFlight += 1
+                            report()
                         }
-                        if pending.count >= Self.writeBatchSize {
-                            try await writer.write(pending, source: source, scanId: scanId)
-                            pending.removeAll(keepingCapacity: true)
-                        }
-                        group.addTask { await pool.parse(entry) }
-                        inFlight += 1
                         report()
                     }
+                }
+
+                while let job = try await group.next() {
+                    absorb(job)
+                    try await flush()
                     report()
                 }
             }
-
-            while let job = try await group.next() {
-                absorb(job)
-                if pending.count >= Self.writeBatchSize {
-                    try await writer.write(pending, source: source, scanId: scanId)
-                    pending.removeAll(keepingCapacity: true)
-                }
-                report()
-            }
+        } catch {
+            // The write task is not a child task: never leave it running once the scan has ended
+            _ = try? await writing?.value
+            throw error
         }
 
-        try await writer.write(pending, source: source, scanId: scanId)
+        try await flush(force: true)
+        try await writing?.value
         counters.errors += walkErrors
         report(force: true)
     }

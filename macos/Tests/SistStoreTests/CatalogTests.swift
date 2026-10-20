@@ -330,3 +330,35 @@ func doc(_ path: String, parent: String? = nil, content: String? = nil, mime: St
         }
     }
 }
+
+@Suite struct SchemaTests {
+    @Test func contentlessDeleteNeedsSQLite343() {
+        #expect(Schema.supportsContentlessDelete(version: "3.43.0"))
+        #expect(Schema.supportsContentlessDelete(version: "3.45.1"))
+        #expect(Schema.supportsContentlessDelete(version: "4.0.0"))
+        #expect(!Schema.supportsContentlessDelete(version: "3.42.9"))
+        #expect(!Schema.supportsContentlessDelete(version: "3.39.5"))
+        #expect(!Schema.supportsContentlessDelete(version: ""))
+    }
+
+    @Test func fullTextIndexKeepsNoCopyOfTheText() async throws {
+        let (catalog, directory) = try makeCatalog()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let (sql, version) = try await catalog.pool.read { db in
+            (try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = 'document_fts'") ?? "",
+             try String.fetchOne(db, sql: "SELECT sqlite_version()") ?? "")
+        }
+        #expect(sql.contains("contentless_delete") == Schema.supportsContentlessDelete(version: version))
+
+        // Rows still go away with their document
+        let source = try await catalog.addSource(root: "/r")
+        let scan = try await catalog.writer.beginScan(sourceId: source.id)
+        try await catalog.writer.write([doc("/r/a.txt", content: "searchable words")], source: source, scanId: scan)
+        #expect(try await catalog.search(SearchQuery(text: "searchable")).total == 1)
+        try await catalog.removeSource(id: source.id)
+        let rows = try await catalog.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM document_fts WHERE document_fts MATCH 'searchable'")
+        }
+        #expect(rows == 0)
+    }
+}

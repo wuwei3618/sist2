@@ -29,6 +29,7 @@ public final class Catalog: Sendable {
         configuration.prepareDatabase { db in
             // Thumbnails and content make the database large; keep the page cache bounded
             try db.execute(sql: "PRAGMA cache_size = -65536")
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
         }
         self.path = path
         self.pool = try DatabasePool(path: path, configuration: configuration)

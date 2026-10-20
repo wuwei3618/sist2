@@ -179,6 +179,9 @@ public struct ScanCoordinator: Sendable {
             } else {
                 results.insert(Self.fallbackResult(for: job.entry, error: job.error ?? "No document produced"), at: 0)
             }
+            if let index = results.lastIndex(where: { $0.document.path == job.entry.path }) {
+                results[index].document.finderTags = job.entry.tags
+            }
             pending += results
             pendingBytes += results.reduce(0) { total, result in
                 total + (result.document.content?.utf8.count ?? 0) + result.thumbnails.reduce(0) { $0 + $1.count }

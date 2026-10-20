@@ -205,6 +205,12 @@ enum Schema {
                 """)
         }
 
+        migrator.registerMigration("v6") { db in
+            // The Finder tags a file had when last parsed, to tell which tags Finder added or
+            // removed since, and so that a file whose tags changed is parsed again
+            try db.execute(sql: "ALTER TABLE document ADD COLUMN finderTags TEXT")
+        }
+
         return migrator
     }
 

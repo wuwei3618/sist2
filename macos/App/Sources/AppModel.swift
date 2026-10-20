@@ -404,13 +404,39 @@ final class AppModel {
     // MARK: Tags
 
     func addTag(_ name: String, to documentId: Int64) async {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
         try? await catalog?.addTag(name, to: documentId)
+        await updateFinderTags(of: documentId) { tags in
+            if !tags.contains(name) {
+                tags.append(name)
+            }
+        }
         await refreshTags()
     }
 
     func removeTag(_ name: String, from documentId: Int64) async {
         try? await catalog?.removeTag(name, from: documentId)
+        await updateFinderTags(of: documentId) { tags in tags.removeAll { $0 == name } }
         await refreshTags()
+    }
+
+    /// Files on disk carry their tags in Finder too. What is written is recorded in the catalog,
+    /// so that the next scan does not take it for a change made in Finder.
+    private func updateFinderTags(of documentId: Int64, _ change: (inout [String]) -> Void) async {
+        guard let catalog, let document = try? await catalog.document(id: documentId)?.summary,
+              !document.isArchiveMember else { return }
+        do {
+            var url = URL(fileURLWithPath: document.path)
+            var tags = try url.resourceValues(forKeys: [.tagNamesKey]).tagNames ?? []
+            change(&tags)
+            var values = URLResourceValues()
+            values.tagNames = tags
+            try url.setResourceValues(values)
+            try await catalog.setFinderTags(tags, documentId: documentId)
+        } catch {
+            errorMessage = "无法更新访达标签：\(error.localizedDescription)"
+        }
     }
 
     // MARK: Defaults

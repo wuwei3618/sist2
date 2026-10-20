@@ -42,13 +42,15 @@ public struct CatalogWriter: Sendable {
     /// Returns the entries that are new or changed since they were last indexed.
     public func markUnchanged(_ entries: [FileEntry], sourceId: Int64, scanId: Int64) async throws -> [FileEntry] {
         try await pool.write { db in
+            // New Finder tags do not change the modification time: they count as a change too
             let statement = try db.cachedStatement(sql: """
                 UPDATE document SET seenScanId = ?
-                WHERE sourceId = ? AND path = ? AND mtime = ? AND size = ? AND parentId IS NULL
+                WHERE sourceId = ? AND path = ? AND mtime = ? AND size = ? AND finderTags IS ? AND parentId IS NULL
                 """)
             var changed: [FileEntry] = []
             for entry in entries {
-                try statement.execute(arguments: [scanId, sourceId, entry.path, entry.mtime, entry.size])
+                try statement.execute(arguments: [scanId, sourceId, entry.path, entry.mtime, entry.size,
+                                                  FinderTags.key(entry.tags)])
                 if db.changesCount == 0 {
                     changed.append(entry)
                 }
@@ -66,16 +68,20 @@ public struct CatalogWriter: Sendable {
             let findPrevious = try db.cachedStatement(
                 sql: "SELECT id FROM document WHERE sourceId = ? AND path = ? AND scanId < ?")
             let deleteMembers = try db.cachedStatement(sql: "DELETE FROM document WHERE parentId = ?")
+            let findFinderTags = try db.cachedStatement(
+                sql: "SELECT finderTags FROM document WHERE sourceId = ? AND path = ?")
+            let deleteTag = try db.cachedStatement(sql: "DELETE FROM tag WHERE documentId = ? AND name = ?")
+            let insertTag = try db.cachedStatement(sql: "INSERT OR IGNORE INTO tag (documentId, name) VALUES (?, ?)")
             let upsert = try db.cachedStatement(sql: """
                 INSERT INTO document (sourceId, parentId, path, directory, name, ext, mime, category, size, mtime,
-                                      title, metadata, checksum, error, thumbnailCount, scanId, seenScanId)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      title, metadata, checksum, error, thumbnailCount, scanId, seenScanId, finderTags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (sourceId, path) DO UPDATE SET
                     parentId = excluded.parentId, directory = excluded.directory, name = excluded.name,
                     ext = excluded.ext, mime = excluded.mime, category = excluded.category, size = excluded.size,
                     mtime = excluded.mtime, title = excluded.title, metadata = excluded.metadata,
                     checksum = excluded.checksum, error = excluded.error, thumbnailCount = excluded.thumbnailCount,
-                    scanId = excluded.scanId, seenScanId = excluded.seenScanId
+                    scanId = excluded.scanId, seenScanId = excluded.seenScanId, finderTags = excluded.finderTags
                 RETURNING id
                 """)
             let upsertContent = try db.cachedStatement(sql: """
@@ -108,12 +114,27 @@ public struct CatalogWriter: Sendable {
                 }
                 let metadata = doc.metadata.isEmpty
                     ? nil : String(decoding: try encoder.encode(doc.metadata), as: UTF8.self)
+                let finderTags = FinderTags.key(doc.finderTags)
+                let previousFinderTags = doc.parentPath == nil
+                    ? try String.fetchOne(findFinderTags, arguments: [source.id, doc.path]) : nil
 
                 guard let id = try Int64.fetchOne(upsert, arguments: [
                     source.id, parentId, doc.path, directory, doc.name, doc.ext, doc.mime, doc.category.rawValue,
                     doc.size, doc.mtime, doc.title, metadata, doc.checksum, doc.error,
-                    result.thumbnails.count, scanId, scanId,
+                    result.thumbnails.count, scanId, scanId, finderTags,
                 ]) else { continue }
+
+                // Tags follow what changed in Finder since the last parse; tags given in the app stay
+                if previousFinderTags != finderTags {
+                    let before = Set(previousFinderTags?.components(separatedBy: "\n") ?? [])
+                    let after = Set(doc.finderTags ?? [])
+                    for name in before.subtracting(after) {
+                        try deleteTag.execute(arguments: [id, name])
+                    }
+                    for name in after.subtracting(before) {
+                        try insertTag.execute(arguments: [id, name])
+                    }
+                }
 
                 if let content = doc.content, !content.isEmpty {
                     try upsertContent.execute(arguments: [

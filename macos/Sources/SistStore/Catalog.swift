@@ -219,6 +219,15 @@ public final class Catalog: Sendable {
                    size: row["size"], hasSubfolders: row["sub"])
     }
 
+    /// Records the Finder tags the app wrote to a file, so that the next scan does not take them
+    /// for a change made in Finder
+    public func setFinderTags(_ tags: [String]?, documentId: Int64) async throws {
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE document SET finderTags = ? WHERE id = ?",
+                           arguments: [FinderTags.key(tags), documentId])
+        }
+    }
+
     // MARK: Saved searches
 
     public func savedSearches() async throws -> [SavedSearch] {

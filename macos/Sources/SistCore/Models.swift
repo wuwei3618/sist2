@@ -7,11 +7,14 @@ public struct FileEntry: Codable, Sendable, Hashable {
     /// Seconds since 1970
     public var mtime: Int64
     public var size: Int64
+    /// Finder tags, nil when there are none (see FinderTags)
+    public var tags: [String]?
 
-    public init(path: String, mtime: Int64, size: Int64) {
+    public init(path: String, mtime: Int64, size: Int64, tags: [String]? = nil) {
         self.path = path
         self.mtime = mtime
         self.size = size
+        self.tags = tags
     }
 }
 
@@ -109,6 +112,8 @@ public struct ParsedDocument: Codable, Sendable, Hashable {
     public var checksum: String?
     /// Set when the extractor failed: the document is still indexed by name and path.
     public var error: String?
+    /// The Finder tags of a file on disk, set by the scan from its FileEntry
+    public var finderTags: [String]?
 
     public init(
         path: String, parentPath: String? = nil, name: String, ext: String, mime: String?,

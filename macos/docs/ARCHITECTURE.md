@@ -195,6 +195,8 @@ sequenceDiagram
 
 调度由 `ScanScheduler`（actor，可在 Linux 上测试）负责：每个源同一时间只有一个扫描；扫描进行中又来的请求合并成一次，在它之后执行（有一个是重建就重建，有一个是整个源就扫整个源）；进行中的变化在扫描结束后补扫；整源扫描会吸收之前攒下的变化。`IndexKeeper` = 一组 FSEvents 监视器 + 一个 `ScanScheduler`。
 
+**访达标签**：遍历时顺带读每个文件的访达标签（扩展属性 `com.apple.metadata:_kMDItemUserTags`，二进制 plist，每个文件一次 `getxattr`），记在 `document.finderTags`。改标签不改修改时间，所以增量比对把标签也算进去：标签变了的文件会被重新解析（FSEvents 对扩展属性的改动也有事件，局部扫描能及时发现）。写入时只应用“上次解析时的访达标签”与“这次的”之差：访达里新加的标签加入，访达里删掉的移除，在 App 里给压缩包成员等加的标签不受影响。反过来，在 App 里给磁盘上的文件加、删标签，会通过 `URLResourceValues.tagNames` 写回访达，并更新 `finderTags`，下次扫描不会把它当成访达里的改动。
+
 **后台服务**：`Sist.app/Contents/Library/LoginItems/SistAgent.app` 是一个没有界面的登录项（`LSBackgroundOnly`），在设置里打开“登录后在后台保持索引更新”时由 App 用 `SMAppService.loginItem` 注册并启动。它运行一个 `IndexKeeper`，启动时先对每个源做一次增量扫描（补上没人监视期间的变化，未变化的文件每个只需一次 `stat`），之后靠 FSEvents 更新；退出 Sist 后照常工作。
 - 谁来扫描由 `ScanLock` 决定：catalog 旁边一个文件上的 `flock`。后台服务运行期间一直持有它；App 能拿到锁就自己扫描、监视，拿不到就说明后台服务在运行，扫描请求转给它。进程不管怎么退出，系统都会释放锁
 - App 与后台服务之间用分布式通知（`AgentLink`）：扫描、取消、源有变化、查询状态、退出几种请求，以及扫描进度和完成事件（JSON），界面上的进度条与本地扫描时一样。数据本身都在共享的 catalog 里（WAL 模式，一写多读），不需要传
@@ -312,7 +314,7 @@ photo*              前缀
 name:报告           只在某一列搜：name、title、content、path
 ```
 
-### 8.3 排序、高亮、分面
+### 8.4 排序、高亮、分面
 
 - 相关度：FTS5 `rank`，列权重与 sist2 相同（文件名 8、标题 8、正文 3、路径 5）；无关键词时按修改时间
 - 其他排序：修改时间、大小、名称
@@ -477,7 +479,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 - [x] pst（ANSI、Unicode）、msg
 - [x] 后台扫描移到登录项 agent（`SMAppService`），关闭窗口、退出 App 后继续更新
 - [x] 拼写建议、文件夹/路径补全、保存的搜索
-- [ ] Finder 标签与应用标签双向同步（`URLResourceValues.tagNames`）
+- [x] 访达标签与应用标签双向同步
 
 **阶段三（语义搜索，对应 sist2 的 embeddings）**
 - [ ] 文本：`NLContextualEmbedding` 或 Core ML 版多语言句向量，按段落分块（对应 sist2 的 per-chunk embeddings）
@@ -490,7 +492,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 | 部分 | 验证方式 |
 |---|---|
-| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，113 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
+| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，115 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
 | PDFKit/ImageIO/Vision/AVFoundation/CoreText/QuickLook 解析器、SwiftUI App | macOS 15 runner 上编译通过，`make-app.sh` 打出的 arm64 + x86_64 通用 `Sist.app` 通过 `codesign --verify --strict` |
 | 界面交互、各 Apple 框架解析器对真实文件的效果 | 尚未验证：CI 只编译不运行界面，也没有 PDF/图片/音视频的样例文件测试。需要在 Mac 上实际走查 |
 

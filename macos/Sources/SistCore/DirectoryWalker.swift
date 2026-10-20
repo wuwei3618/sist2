@@ -95,7 +95,7 @@ public final class DirectoryWalker: Sequence, IteratorProtocol {
             if type == S_IFDIR {
                 if isPruned(path, depth: frame.depth + 1, isDirectory: true) { continue }
                 if options.treatPackagesAsFiles && Self.isPackage(path: path, name: name) {
-                    return FileEntry(path: path, mtime: Self.mtime(info), size: 0)
+                    return FileEntry(path: path, mtime: Self.mtime(info), size: 0, tags: FinderTags.read(path: path))
                 }
                 guard let handle = opendir(path) else {
                     reportError(path)
@@ -105,7 +105,8 @@ public final class DirectoryWalker: Sequence, IteratorProtocol {
                 stack.append(Frame(handle: handle, path: path, depth: frame.depth + 1))
             } else if type == S_IFREG {
                 if isPruned(path, depth: frame.depth, isDirectory: false) { continue }
-                return FileEntry(path: path, mtime: Self.mtime(info), size: Int64(info.st_size))
+                return FileEntry(path: path, mtime: Self.mtime(info), size: Int64(info.st_size),
+                                 tags: FinderTags.read(path: path))
             }
         }
         return nil

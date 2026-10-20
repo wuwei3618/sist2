@@ -477,3 +477,64 @@ func doc(_ path: String, parent: String? = nil, content: String? = nil, mime: St
         #expect(remaining.first?.state == #"{"text":"季度报告"}"#)
     }
 }
+
+@Suite struct FinderTagTests {
+    @Test func attributeFormat() throws {
+        let data = try PropertyListSerialization.data(fromPropertyList: ["红色\n6", "项目", "Work\n0"], format: .binary,
+                                                      options: 0)
+        #expect(FinderTags.decode(data) == ["红色", "项目", "Work"])
+        #expect(FinderTags.decode(Data("not a plist".utf8)) == nil)
+        #expect(FinderTags.key(["b", "a", "a"]) == "a\nb")
+        #expect(FinderTags.key([]) == nil)
+        #expect(FinderTags.key(nil) == nil)
+    }
+
+    @Test func tagsFollowFinderAndKeepTheAppsOwn() async throws {
+        let (catalog, directory) = try makeCatalog()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let source = try await catalog.addSource(root: "/r")
+        func write(_ tags: [String]?) async throws -> Int64 {
+            let scan = try await catalog.writer.beginScan(sourceId: source.id)
+            var result = doc("/r/a.txt", content: "tagged")
+            result.document.finderTags = tags
+            try await catalog.writer.write([result], source: source, scanId: scan)
+            return try #require(try await catalog.search(SearchQuery(text: "tagged")).hits.first?.id)
+        }
+        func tags(_ id: Int64) async throws -> [String] {
+            try await catalog.document(id: id)?.tags ?? []
+        }
+
+        let id = try await write(["红色", "项目"])
+        #expect(try await tags(id) == ["红色", "项目"])
+        try await catalog.addTag("手动", to: id)
+        // Finder dropped one tag; the one added in the app stays
+        #expect(try await write(["项目"]) == id)
+        #expect(try await tags(id) == ["手动", "项目"])
+        _ = try await write(nil)
+        #expect(try await tags(id) == ["手动"])
+
+        // A change of tags alone makes the file count as changed
+        let entry = FileEntry(path: "/r/a.txt", mtime: 1_700_000_000, size: 10)
+        let scan = try await catalog.writer.beginScan(sourceId: source.id)
+        #expect(try await catalog.writer.markUnchanged([entry], sourceId: source.id, scanId: scan).isEmpty)
+        var tagged = entry
+        tagged.tags = ["新"]
+        #expect(try await catalog.writer.markUnchanged([tagged], sourceId: source.id, scanId: scan) == [tagged])
+        try await catalog.setFinderTags(["新"], documentId: id)
+        #expect(try await catalog.writer.markUnchanged([tagged], sourceId: source.id, scanId: scan).isEmpty)
+    }
+
+    #if os(macOS)
+    @Test func readFromFiles() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("sist-tags-\(UUID().uuidString).txt").path
+        try "x".write(toFile: path, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        #expect(FinderTags.read(path: path) == nil)
+        var url = URL(fileURLWithPath: path)
+        var values = URLResourceValues()
+        values.tagNames = ["重要", "Blue"]
+        try url.setResourceValues(values)
+        #expect(Set(FinderTags.read(path: path) ?? []) == ["重要", "Blue"])
+    }
+    #endif
+}

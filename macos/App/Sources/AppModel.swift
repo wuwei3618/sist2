@@ -427,12 +427,11 @@ final class AppModel {
         guard let catalog, let document = try? await catalog.document(id: documentId)?.summary,
               !document.isArchiveMember else { return }
         do {
-            var url = URL(fileURLWithPath: document.path)
+            let url = URL(fileURLWithPath: document.path)
             var tags = try url.resourceValues(forKeys: [.tagNamesKey]).tagNames ?? []
             change(&tags)
-            var values = URLResourceValues()
-            values.tagNames = tags
-            try url.setResourceValues(values)
+            // URLResourceValues.tagNames cannot be set from Swift; NSURL can
+            try (url as NSURL).setResourceValue(tags, forKey: .tagNamesKey)
             try await catalog.setFinderTags(tags, documentId: documentId)
         } catch {
             errorMessage = "无法更新访达标签：\(error.localizedDescription)"

@@ -195,7 +195,7 @@ sequenceDiagram
 
 调度由 `ScanScheduler`（actor，可在 Linux 上测试）负责：每个源同一时间只有一个扫描；扫描进行中又来的请求合并成一次，在它之后执行（有一个是重建就重建，有一个是整个源就扫整个源）；进行中的变化在扫描结束后补扫；整源扫描会吸收之前攒下的变化。`IndexKeeper` = 一组 FSEvents 监视器 + 一个 `ScanScheduler`。
 
-**访达标签**：遍历时顺带读每个文件的访达标签（扩展属性 `com.apple.metadata:_kMDItemUserTags`，二进制 plist，每个文件一次 `getxattr`），记在 `document.finderTags`。改标签不改修改时间，所以增量比对把标签也算进去：标签变了的文件会被重新解析（FSEvents 对扩展属性的改动也有事件，局部扫描能及时发现）。写入时只应用“上次解析时的访达标签”与“这次的”之差：访达里新加的标签加入，访达里删掉的移除，在 App 里给压缩包成员等加的标签不受影响。反过来，在 App 里给磁盘上的文件加、删标签，会通过 `URLResourceValues.tagNames` 写回访达，并更新 `finderTags`，下次扫描不会把它当成访达里的改动。
+**访达标签**：遍历时顺带读每个文件的访达标签（扩展属性 `com.apple.metadata:_kMDItemUserTags`，二进制 plist，每个文件一次 `getxattr`），记在 `document.finderTags`。改标签不改修改时间，所以增量比对把标签也算进去：标签变了的文件会被重新解析（FSEvents 对扩展属性的改动也有事件，局部扫描能及时发现）。写入时只应用“上次解析时的访达标签”与“这次的”之差：访达里新加的标签加入，访达里删掉的移除，在 App 里给压缩包成员等加的标签不受影响。反过来，在 App 里给磁盘上的文件加、删标签，会通过 `NSURL` 的 `tagNamesKey` 写回访达（Swift 的 `URLResourceValues.tagNames` 是只读的），并更新 `finderTags`，下次扫描不会把它当成访达里的改动。
 
 **后台服务**：`Sist.app/Contents/Library/LoginItems/SistAgent.app` 是一个没有界面的登录项（`LSBackgroundOnly`），在设置里打开“登录后在后台保持索引更新”时由 App 用 `SMAppService.loginItem` 注册并启动。它运行一个 `IndexKeeper`，启动时先对每个源做一次增量扫描（补上没人监视期间的变化，未变化的文件每个只需一次 `stat`），之后靠 FSEvents 更新；退出 Sist 后照常工作。
 - 谁来扫描由 `ScanLock` 决定：catalog 旁边一个文件上的 `flock`。后台服务运行期间一直持有它；App 能拿到锁就自己扫描、监视，拿不到就说明后台服务在运行，扫描请求转给它。进程不管怎么退出，系统都会释放锁

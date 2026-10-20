@@ -530,10 +530,8 @@ func doc(_ path: String, parent: String? = nil, content: String? = nil, mime: St
         try "x".write(toFile: path, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(atPath: path) }
         #expect(FinderTags.read(path: path) == nil)
-        var url = URL(fileURLWithPath: path)
-        var values = URLResourceValues()
-        values.tagNames = ["重要", "Blue"]
-        try url.setResourceValues(values)
+        // URLResourceValues.tagNames cannot be set from Swift; NSURL can
+        try (URL(fileURLWithPath: path) as NSURL).setResourceValue(["重要", "Blue"], forKey: .tagNamesKey)
         #expect(Set(FinderTags.read(path: path) ?? []) == ["重要", "Blue"])
     }
     #endif

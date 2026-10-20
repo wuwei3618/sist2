@@ -70,6 +70,8 @@ macos/
 │   └── sist/             命令行工具
 ├── App/
 │   ├── Sources/          SwiftUI 应用（主窗口、快速搜索面板、菜单栏）
+│   ├── Service/          App 与后台服务共用：文件夹监视、扫描调度、两者间的通知
+│   ├── Agent/            后台服务（登录项，退出 App 后继续更新索引）
 │   ├── Icon/AppIcon.png  应用图标（scripts/make-icon.py 生成）
 │   └── Info.plist        打包用（用途说明等）
 ├── Tests/

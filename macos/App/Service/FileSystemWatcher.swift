@@ -4,7 +4,7 @@ import SistScan
 
 /// FSEvents on a folder tree. sist2 relies on scheduled rescans; here the folders that changed
 /// are rescanned incrementally (see ChangeScopes).
-final class FileSystemWatcher {
+public final class FileSystemWatcher {
     private let path: String
     private let ignoredPrefixes: [String]
     private let onChange: ([FileChange]) -> Void
@@ -12,7 +12,7 @@ final class FileSystemWatcher {
     private var stream: FSEventStreamRef?
 
     /// `onChange` runs on a background queue, at most every couple of seconds.
-    init(path: String, ignoring ignoredPrefixes: [String] = [], onChange: @escaping ([FileChange]) -> Void) {
+    public init(path: String, ignoring ignoredPrefixes: [String] = [], onChange: @escaping ([FileChange]) -> Void) {
         self.path = path
         self.ignoredPrefixes = ignoredPrefixes
         self.onChange = onChange
@@ -22,7 +22,7 @@ final class FileSystemWatcher {
         stop()
     }
 
-    func start() {
+    public func start() {
         guard stream == nil else { return }
         var context = FSEventStreamContext(
             version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
@@ -44,7 +44,7 @@ final class FileSystemWatcher {
         self.stream = stream
     }
 
-    func stop() {
+    public func stop() {
         guard let stream else { return }
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)

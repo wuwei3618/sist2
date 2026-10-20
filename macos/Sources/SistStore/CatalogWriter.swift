@@ -3,7 +3,7 @@ import GRDB
 import SistCore
 
 /// Counters of one scan, persisted in the `scan` row.
-public struct ScanCounters: Sendable, Hashable {
+public struct ScanCounters: Sendable, Hashable, Codable {
     public var walked = 0
     public var unchanged = 0
     public var parsed = 0

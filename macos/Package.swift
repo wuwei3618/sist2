@@ -111,12 +111,29 @@ let package = Package(
 // build and test on Linux CI.
 #if os(macOS)
 package.products.append(.executable(name: "SistApp", targets: ["SistApp"]))
-package.targets.append(
+package.products.append(.executable(name: "SistAgent", targets: ["SistAgent"]))
+package.targets += [
+    // Folder watching and scanning shared by the app and the background agent, and the
+    // notifications between them
+    .target(
+        name: "SistService",
+        dependencies: ["SistCore", "SistStore", "SistScan"],
+        path: "App/Service",
+        swiftSettings: [.swiftLanguageMode(.v5)]
+    ),
     .executableTarget(
         name: "SistApp",
-        dependencies: ["SistCore", "SistStore", "SistScan"],
+        dependencies: ["SistCore", "SistStore", "SistScan", "SistService"],
         path: "App/Sources",
         swiftSettings: [.swiftLanguageMode(.v5)]
-    )
-)
+    ),
+    // The login item that keeps the index up to date while the app is closed
+    .executableTarget(
+        name: "SistAgent",
+        dependencies: ["SistCore", "SistStore", "SistScan", "SistService"],
+        path: "App/Agent",
+        exclude: ["Info.plist"],
+        swiftSettings: [.swiftLanguageMode(.v5)]
+    ),
+]
 #endif

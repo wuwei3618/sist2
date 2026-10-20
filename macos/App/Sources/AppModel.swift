@@ -3,10 +3,13 @@ import Foundation
 import Observation
 import SistCore
 import SistExtractors
+import ServiceManagement
 import SistScan
+import SistService
 import SistStore
 
-/// App-wide state: the catalog, its sources, running scans and the folder watchers.
+/// App-wide state: the catalog, its sources and running scans. Scanning and folder watching
+/// happen here, or in the background agent when it runs (see AgentLink).
 @MainActor
 @Observable
 final class AppModel {
@@ -29,9 +32,15 @@ final class AppModel {
     var watchFolders: Bool {
         didSet {
             UserDefaults.standard.set(watchFolders, forKey: "watchFolders")
-            updateWatchers()
+            keeper?.watching = watchFolders
+            Task { await keeper?.reloadSources() }
         }
     }
+
+    /// The background agent is running and does the scanning
+    private(set) var agentRunning = false
+    /// The login item's registration
+    private(set) var agentStatus: SMAppService.Status = .notRegistered
 
     /// Shows the quick search panel from anywhere
     var quickSearchShortcut: QuickSearchShortcut {
@@ -56,13 +65,10 @@ final class AppModel {
 
     @ObservationIgnored private var started = false
     @ObservationIgnored private var quickSearch: QuickSearchController?
-    @ObservationIgnored private var scanTasks: [Int64: Task<Void, Never>] = [:]
-    @ObservationIgnored private var watchers: [Int64: FileSystemWatcher] = [:]
-    @ObservationIgnored private var pendingRescans: [Int64: Task<Void, Never>] = [:]
-    /// FSEvents gathered per source until the next rescan
-    @ObservationIgnored private var pendingEvents: [Int64: [FileChange]] = [:]
-
-    static let rescanDelay: Duration = .seconds(10)
+    /// Scanning and watching in this process, while the agent does not run
+    @ObservationIgnored private var keeper: IndexKeeper?
+    private let scanLock = ScanLock(catalogPath: Catalog.defaultPath)
+    @ObservationIgnored private var agentCheck: Task<Void, Never>?
 
     init() {
         defaultOptions = Self.loadDefaultOptions()
@@ -87,6 +93,9 @@ final class AppModel {
             await refreshSources()
             await refreshTags()
             search.run()
+            listenToAgent()
+            refreshAgentStatus()
+            await chooseScanner()
         } catch {
             isOpeningCatalog = false
             errorMessage = "无法打开索引数据库：\(error)"
@@ -99,7 +108,6 @@ final class AppModel {
         guard let catalog else { return }
         do {
             sources = try await catalog.sources()
-            updateWatchers()
         } catch {
             errorMessage = "\(error)"
         }
@@ -131,6 +139,7 @@ final class AppModel {
         do {
             let source = try await catalog.addSource(root: url.path, options: defaultOptions)
             await refreshSources()
+            await sourcesChanged()
             scan(source.id)
         } catch {
             errorMessage = "\(error)"
@@ -139,7 +148,7 @@ final class AppModel {
 
     func removeSource(_ id: Int64) async {
         guard let catalog else { return }
-        scanTasks[id]?.cancel()
+        cancelScan(id)
         do {
             try await catalog.removeSource(id: id)
         } catch {
@@ -147,6 +156,7 @@ final class AppModel {
         }
         search.sourceIds.remove(id)
         await refreshSources()
+        await sourcesChanged()
         search.run()
     }
 
@@ -169,22 +179,10 @@ final class AppModel {
     /// Scans a source, or only `scopes` of it. Options that changed how files are parsed make it a
     /// rebuild of the whole source (see ScanCoordinator).
     func scan(_ id: Int64, mode: ScanMode = .incremental, scopes: [ScanScope]? = nil) {
-        guard let catalog, scanTasks[id] == nil else { return }
-        let coordinator = ScanCoordinator(catalog: catalog)
-        let report: @Sendable (ScanProgress) -> Void = { [weak self] progress in
-            guard let self else { return }
-            Task { @MainActor in
-                self.activeScans[id] = progress
-            }
-        }
-        scanTasks[id] = Task { [weak self] in
-            do {
-                try await coordinator.scan(sourceId: id, mode: mode, scopes: scopes, progress: report)
-            } catch is CancellationError {
-            } catch {
-                self?.errorMessage = "扫描失败：\(error)"
-            }
-            await self?.scanFinished(id)
+        if agentRunning {
+            AgentLink.post(AgentLink.scanRequest, AgentLink.ScanRequest(sourceId: id, mode: mode, scopes: scopes))
+        } else if let keeper {
+            Task { await keeper.scheduler.scan(id, mode: mode, scopes: scopes) }
         }
     }
 
@@ -197,18 +195,6 @@ final class AppModel {
         scan(folder.sourceId, scopes: [ScanScope(path: folder.path, recursive: true)])
     }
 
-    private func scanFinished(_ id: Int64) async {
-        scanTasks[id] = nil
-        activeScans[id] = nil
-        catalogVersion += 1
-        await refreshSources()
-        search.run()
-        // Changes that arrived during the scan
-        if pendingEvents[id]?.isEmpty == false {
-            scheduleRescan(id)
-        }
-    }
-
     func scanAll() {
         for info in sources {
             scan(info.id)
@@ -216,59 +202,151 @@ final class AppModel {
     }
 
     func cancelScan(_ id: Int64) {
-        scanTasks[id]?.cancel()
+        if agentRunning {
+            AgentLink.post(AgentLink.cancelRequest, AgentLink.CancelRequest(sourceId: id))
+        } else if let keeper {
+            Task { await keeper.scheduler.cancel(id) }
+        }
     }
 
     func cancelAllScans() {
-        for task in scanTasks.values {
-            task.cancel()
+        if agentRunning {
+            AgentLink.post(AgentLink.cancelRequest, AgentLink.CancelRequest(sourceId: nil))
+        } else if let keeper {
+            Task { await keeper.scheduler.cancelAll() }
         }
     }
 
     func isScanning(_ id: Int64) -> Bool {
-        scanTasks[id] != nil
+        activeScans[id] != nil
     }
 
-    // MARK: Watching
-
-    private func updateWatchers() {
-        let wanted = watchFolders ? Set(sources.map(\.id)) : []
-        for (id, watcher) in watchers where !wanted.contains(id) {
-            watcher.stop()
-            watchers[id] = nil
+    /// Progress and completion, from this process or from the agent
+    private func handle(_ event: ScanScheduler.Event) {
+        switch event {
+        case .progress(let progress):
+            activeScans[progress.sourceId] = progress
+        case .finished(let id, let error):
+            activeScans[id] = nil
+            catalogVersion += 1
+            if let error {
+                errorMessage = "扫描失败：\(error)"
+            }
+            Task {
+                await refreshSources()
+                search.run()
+            }
         }
-        // The catalog may live inside a watched folder: its own writes must not trigger scans
-        let catalogDirectory = (Catalog.defaultPath as NSString).deletingLastPathComponent
-        for info in sources where wanted.contains(info.id) && watchers[info.id] == nil {
-            let id = info.id
-            let watcher = FileSystemWatcher(path: info.source.root, ignoring: [catalogDirectory]) { [weak self] events in
-                Task { @MainActor [weak self] in
-                    self?.folderChanged(id, events: events)
+    }
+
+    private func sourcesChanged() async {
+        if agentRunning {
+            AgentLink.post(AgentLink.sourcesChanged)
+        } else {
+            await keeper?.reloadSources()
+        }
+    }
+
+    // MARK: Background agent
+
+    /// Scans here unless the agent runs: whoever holds the scan lock scans
+    private func chooseScanner() async {
+        if scanLock.tryAcquire() {
+            agentRunning = false
+            guard keeper == nil, let catalog else { return }
+            let keeper = IndexKeeper(catalog: catalog) { [weak self] event in
+                Task { @MainActor in self?.handle(event) }
+            }
+            keeper.watching = watchFolders
+            self.keeper = keeper
+            await keeper.reloadSources()
+        } else {
+            await handOverToAgent()
+        }
+    }
+
+    /// The agent took over: stop scanning and watching here, and follow its progress
+    private func handOverToAgent() async {
+        agentRunning = true
+        if let keeper {
+            self.keeper = nil
+            await keeper.stop()
+        }
+        scanLock.release()
+        activeScans = [:]
+        // Should the agent die, its lock goes with it: scan here again
+        agentCheck?.cancel()
+        agentCheck = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard let self, self.agentRunning else { return }
+                if !ScanLock.isHeldElsewhere(catalogPath: Catalog.defaultPath) {
+                    await self.chooseScanner()
                 }
             }
-            watcher.start()
-            watchers[id] = watcher
         }
     }
 
-    private func folderChanged(_ id: Int64, events: [FileChange]) {
-        pendingEvents[id, default: []] += events
-        // A running scan picks the events up when it finishes
-        if scanTasks[id] == nil {
-            scheduleRescan(id)
+    private func listenToAgent() {
+        AgentLink.observe(AgentLink.agentStarted) { [weak self] _ in
+            guard let self, !self.agentRunning else { return }
+            Task { await self.handOverToAgent() }
+        }
+        AgentLink.observe(AgentLink.agentStopped) { [weak self] _ in
+            guard let self, self.agentRunning else { return }
+            Task {
+                // Its lock is released just before
+                try? await Task.sleep(for: .milliseconds(500))
+                await self.chooseScanner()
+            }
+        }
+        AgentLink.observe(AgentLink.scanEvent) { [weak self] notification in
+            guard let self, self.agentRunning, let event = AgentLink.event(from: notification) else { return }
+            self.handle(event)
+        }
+        AgentLink.post(AgentLink.statusRequest)
+    }
+
+    private var agentService: SMAppService? {
+        Bundle.main.bundleIdentifier.map { SMAppService.loginItem(identifier: AgentLink.agentIdentifier(appIdentifier: $0)) }
+    }
+
+    func refreshAgentStatus() {
+        agentStatus = agentService?.status ?? .notFound
+    }
+
+    /// Registers the agent as a login item, which also starts it, or stops and unregisters it.
+    /// While it starts the app keeps scanning; it hands over once the agent holds the lock.
+    func setBackgroundAgent(_ enabled: Bool) {
+        guard let service = agentService else { return }
+        Task {
+            do {
+                if enabled {
+                    // The agent waits for the lock: let go of it if no scan is running here
+                    if activeScans.isEmpty, let keeper {
+                        self.keeper = nil
+                        await keeper.stop()
+                        scanLock.release()
+                    }
+                    try service.register()
+                } else {
+                    AgentLink.post(AgentLink.quit)
+                    try await service.unregister()
+                }
+            } catch {
+                errorMessage = "无法\(enabled ? "启用" : "停用")后台索引：\(error.localizedDescription)"
+            }
+            refreshAgentStatus()
+            // Give the agent a moment, then make sure someone scans
+            try? await Task.sleep(for: .seconds(5))
+            if !agentRunning {
+                await chooseScanner()
+            }
         }
     }
 
-    private func scheduleRescan(_ id: Int64) {
-        pendingRescans[id]?.cancel()
-        pendingRescans[id] = Task { [weak self] in
-            try? await Task.sleep(for: Self.rescanDelay)
-            guard !Task.isCancelled, let self else { return }
-            self.pendingRescans[id] = nil
-            guard let root = self.sources.first(where: { $0.id == id })?.source.root else { return }
-            let events = self.pendingEvents.removeValue(forKey: id) ?? []
-            self.scan(id, scopes: ChangeScopes.scopes(for: events, root: root))
-        }
+    func openLoginItemsSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 
     // MARK: Windows

@@ -51,8 +51,9 @@ public final class InProcessParserPool: ParserPool {
 public enum WorkerLocator {
     public static let executableName = "sist-worker"
 
-    /// The `sist-worker` executable: `$SIST_WORKER_PATH`, inside the app bundle, or next to the
-    /// running executable (the CLI, or `swift test`'s products directory).
+    /// The `sist-worker` executable: `$SIST_WORKER_PATH`, inside the app bundle, next to the
+    /// running executable (the CLI, or `swift test`'s products directory), or in the app that
+    /// contains the running login item.
     public static func find() -> URL? {
         let fileManager = FileManager.default
         var candidates: [URL] = []
@@ -63,8 +64,12 @@ public enum WorkerLocator {
             candidates.append(url)
         }
         if let executable = Bundle.main.executableURL {
-            candidates.append(executable.resolvingSymlinksInPath().deletingLastPathComponent()
-                .appendingPathComponent(executableName))
+            let directory = executable.resolvingSymlinksInPath().deletingLastPathComponent()
+            candidates.append(directory.appendingPathComponent(executableName))
+            // A login item in Sist.app/Contents/Library/LoginItems/X.app/Contents/MacOS uses the app's
+            let enclosingApp = directory.deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            candidates.append(enclosingApp.appendingPathComponent("MacOS").appendingPathComponent(executableName))
         }
         #if os(macOS)
         // Tests run from Xcode are loaded into Xcode's xctest tool, next to the built products

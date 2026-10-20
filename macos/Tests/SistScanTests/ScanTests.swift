@@ -313,3 +313,117 @@ final class CancelBox: @unchecked Sendable {
         #expect(ChangeScopes.scopes(for: many, root: "/r", limit: 10)?.count == 10)
     }
 }
+
+@Suite struct ScanLockTests {
+    @Test func oneHolderAtATime() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sist-lock-\(UUID().uuidString)").path
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let catalogPath = directory + "/catalog.sqlite"
+
+        let agent = ScanLock(catalogPath: catalogPath)
+        let app = ScanLock(catalogPath: catalogPath)
+        #expect(!ScanLock.isHeldElsewhere(catalogPath: catalogPath))
+        #expect(agent.tryAcquire())
+        #expect(agent.tryAcquire())
+        #expect(!app.tryAcquire())
+        #expect(ScanLock.isHeldElsewhere(catalogPath: catalogPath))
+        agent.release()
+        #expect(app.tryAcquire())
+        #expect(app.isHeld)
+        #expect(!agent.isHeld)
+    }
+}
+
+@Suite(.serialized) struct ScanSchedulerTests {
+    /// Scheduler events as a stream the test can wait on
+    final class Events: @unchecked Sendable {
+        let stream: AsyncStream<ScanScheduler.Event>
+        let continuation: AsyncStream<ScanScheduler.Event>.Continuation
+
+        init() {
+            (stream, continuation) = AsyncStream.makeStream()
+        }
+
+        /// The progress reports up to the next finished scan, and its error
+        func nextScan() async -> (progress: [ScanProgress], error: String?) {
+            var progress: [ScanProgress] = []
+            for await event in stream {
+                switch event {
+                case .progress(let report): progress.append(report)
+                case .finished(_, let error): return (progress, error)
+                }
+            }
+            return (progress, "stream ended")
+        }
+    }
+
+    @Test func changesBecomeOneScopedScan() async throws {
+        let root = try makeTree(["a/one.txt": "first", "b/two.txt": "second"])
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let catalog = try Catalog(path: root + ".catalog/catalog.sqlite")
+        defer { try? FileManager.default.removeItem(atPath: root + ".catalog") }
+        let source = try await catalog.addSource(root: root)
+        let events = Events()
+        let scheduler = ScanScheduler(catalog: catalog, isolation: .inProcess, rescanDelay: .milliseconds(200)) {
+            events.continuation.yield($0)
+        }
+
+        await scheduler.scan(source.id)
+        let first = await events.nextScan()
+        #expect(first.error == nil)
+        #expect(first.progress.last?.counters.parsed == 2)
+
+        // Two bursts of changes in one folder: one scan of that folder, after things are quiet
+        try "third about kingfishers".write(toFile: root + "/a/three.txt", atomically: true, encoding: .utf8)
+        await scheduler.changed(source.id, [FileChange(path: root + "/a/three.txt", isDirectory: false)])
+        await scheduler.changed(source.id, [FileChange(path: root + "/a/one.txt", isDirectory: false)])
+        let rescan = await events.nextScan()
+        #expect(rescan.progress.last?.scopes == [ScanScope(path: root + "/a", recursive: false)])
+        #expect(rescan.progress.last?.counters.walked == 2)
+        #expect(try await catalog.search(SearchQuery(text: "kingfishers")).total == 1)
+        #expect(await scheduler.scanning.isEmpty)
+    }
+
+    @Test func requestsDuringAScanRunAfterItMerged() async throws {
+        let root = try makeTree((0..<200).reduce(into: [:]) { $0["f\($1).txt"] = "file \($1)" })
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let catalog = try Catalog(path: root + ".catalog/catalog.sqlite")
+        defer { try? FileManager.default.removeItem(atPath: root + ".catalog") }
+        let source = try await catalog.addSource(root: root)
+        let events = Events()
+        let scheduler = ScanScheduler(catalog: catalog, isolation: .inProcess, rescanDelay: .milliseconds(100)) {
+            events.continuation.yield($0)
+        }
+
+        await scheduler.scan(source.id)
+        await scheduler.scan(source.id, scopes: [ScanScope(path: root, recursive: false)])
+        await scheduler.scan(source.id, mode: .rebuild)
+        #expect(await scheduler.scanning == [source.id])
+        let first = await events.nextScan()
+        #expect(first.progress.last?.isRebuild == false)
+        // The two requests ran as one rebuild of the whole source
+        let second = await events.nextScan()
+        #expect(second.progress.last?.isRebuild == true)
+        #expect(second.progress.last?.scopes == nil)
+        #expect(second.progress.last?.counters.parsed == 200)
+    }
+
+    @Test func cancelling() async throws {
+        let root = try makeTree((0..<300).reduce(into: [:]) { $0["f\($1).txt"] = "file \($1)" })
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let catalog = try Catalog(path: root + ".catalog/catalog.sqlite")
+        defer { try? FileManager.default.removeItem(atPath: root + ".catalog") }
+        let source = try await catalog.addSource(root: root)
+        let events = Events()
+        let scheduler = ScanScheduler(catalog: catalog, isolation: .inProcess) { events.continuation.yield($0) }
+
+        await scheduler.scan(source.id)
+        await scheduler.scan(source.id, mode: .rebuild)
+        await scheduler.cancel(source.id)
+        _ = await events.nextScan()
+        // The queued rebuild was dropped with it
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await scheduler.scanning.isEmpty)
+    }
+}

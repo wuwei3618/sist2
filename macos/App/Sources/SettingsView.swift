@@ -47,8 +47,44 @@ private struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            BackgroundAgentSection()
         }
         .formStyle(.grouped)
+        .onAppear { model.refreshAgentStatus() }
+    }
+}
+
+/// The login item that keeps the index up to date while Sist is closed
+private struct BackgroundAgentSection: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Section("后台索引") {
+            Toggle("登录后在后台保持索引更新", isOn: Binding(
+                get: { model.agentStatus == .enabled || model.agentStatus == .requiresApproval },
+                set: { model.setBackgroundAgent($0) }))
+                .disabled(model.agentStatus == .notFound)
+            switch model.agentStatus {
+            case .requiresApproval:
+                HStack {
+                    Label("需要在“系统设置 › 通用 › 登录项”中允许 Sist", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button("打开登录项设置") { model.openLoginItemsSettings() }
+                }
+                .font(.caption)
+            case .notFound:
+                Text("只有打包好的 Sist.app 才有后台服务（swift run 运行时没有）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            default:
+                Text(model.agentRunning
+                     ? "后台服务正在运行：即使退出 Sist，文件夹的变化也会写进索引；扫描由它进行。"
+                     : "开启后，一个没有界面的后台服务随登录启动，在 Sist 退出后继续监视文件夹、更新索引。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

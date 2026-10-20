@@ -40,6 +40,13 @@ universal SistApp "$APP/Contents/MacOS/Sist"
 universal sist-worker "$APP/Contents/MacOS/sist-worker"
 # The command line tool ships inside the app: ln -s /Applications/Sist.app/Contents/MacOS/sist /usr/local/bin/sist
 universal sist "$APP/Contents/MacOS/sist"
+# The background agent, a login item registered by the app with SMAppService. It uses the app's
+# sist-worker (WorkerLocator looks in the enclosing app).
+AGENT="$APP/Contents/Library/LoginItems/SistAgent.app"
+mkdir -p "$AGENT/Contents/MacOS"
+universal SistAgent "$AGENT/Contents/MacOS/SistAgent"
+sed -e "s/__BUNDLE_ID__/$BUNDLE_ID/" -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" \
+    App/Agent/Info.plist > "$AGENT/Contents/Info.plist"
 for bundle in "${BINS[0]}"/*.bundle; do
     [ -e "$bundle" ] && cp -R "$bundle" "$APP/Contents/Resources/"
 done
@@ -64,6 +71,7 @@ if [ "$SIGN_IDENTITY" != "-" ]; then
 fi
 codesign "${SIGN_FLAGS[@]}" "$APP/Contents/MacOS/sist-worker"
 codesign "${SIGN_FLAGS[@]}" "$APP/Contents/MacOS/sist"
+codesign "${SIGN_FLAGS[@]}" "$AGENT"
 codesign "${SIGN_FLAGS[@]}" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 

@@ -3,8 +3,8 @@ import SistCore
 import SistExtractors
 import SistStore
 
-public struct ScanProgress: Sendable, Hashable {
-    public enum Phase: String, Sendable {
+public struct ScanProgress: Sendable, Hashable, Codable {
+    public enum Phase: String, Sendable, Codable {
         case walking, finishing, completed
     }
 
@@ -22,7 +22,7 @@ public struct ScanProgress: Sendable, Hashable {
     public var scopes: [ScanScope]?
 }
 
-public enum ScanMode: Sendable {
+public enum ScanMode: String, Sendable, Codable {
     /// Parse new and changed files only
     case incremental
     /// Parse every file again

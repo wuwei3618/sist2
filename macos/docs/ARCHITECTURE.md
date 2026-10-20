@@ -191,7 +191,15 @@ sequenceDiagram
 
 **反压**：遍历是拉取式迭代器，每批 256 个；在途解析任务超过 2 倍并发数时先收结果再继续遍历，内存不会随目录规模增长。
 
-**自动更新**：App 用 FSEvents（文件级事件）监听每个源，2 秒合并一次，10 秒内的变化攒在一起做一次局部扫描（`ChangeScopes`）：变化的文件 → 扫描它所在的目录（不含子目录，增、改、删都能发现）；变化的目录（移入、移出、改名）→ 扫描它及其下全部；FSEvents 丢了事件或根目录变了 → 扫描整个源。扫描进行中的变化在扫描结束后补扫。catalog 所在目录和隐藏文件的事件会被忽略，避免自己的写入触发扫描。
+**自动更新**：用 FSEvents（文件级事件）监听每个源，2 秒合并一次，10 秒内的变化攒在一起做一次局部扫描（`ChangeScopes`）：变化的文件 → 扫描它所在的目录（不含子目录，增、改、删都能发现）；变化的目录（移入、移出、改名）→ 扫描它及其下全部；FSEvents 丢了事件或根目录变了 → 扫描整个源。catalog 所在目录和隐藏文件的事件会被忽略，避免自己的写入触发扫描。
+
+调度由 `ScanScheduler`（actor，可在 Linux 上测试）负责：每个源同一时间只有一个扫描；扫描进行中又来的请求合并成一次，在它之后执行（有一个是重建就重建，有一个是整个源就扫整个源）；进行中的变化在扫描结束后补扫；整源扫描会吸收之前攒下的变化。`IndexKeeper` = 一组 FSEvents 监视器 + 一个 `ScanScheduler`。
+
+**后台服务**：`Sist.app/Contents/Library/LoginItems/SistAgent.app` 是一个没有界面的登录项（`LSBackgroundOnly`），在设置里打开“登录后在后台保持索引更新”时由 App 用 `SMAppService.loginItem` 注册并启动。它运行一个 `IndexKeeper`，启动时先对每个源做一次增量扫描（补上没人监视期间的变化，未变化的文件每个只需一次 `stat`），之后靠 FSEvents 更新；退出 Sist 后照常工作。
+- 谁来扫描由 `ScanLock` 决定：catalog 旁边一个文件上的 `flock`。后台服务运行期间一直持有它；App 能拿到锁就自己扫描、监视，拿不到就说明后台服务在运行，扫描请求转给它。进程不管怎么退出，系统都会释放锁
+- App 与后台服务之间用分布式通知（`AgentLink`）：扫描、取消、源有变化、查询状态、退出几种请求，以及扫描进度和完成事件（JSON），界面上的进度条与本地扫描时一样。数据本身都在共享的 catalog 里（WAL 模式，一写多读），不需要传
+- 交接：启用后台服务时 App 先停掉本地扫描、放开锁，后台服务拿到锁后广播“已启动”，App 改为转发；停用时 App 发“退出”，后台服务放开锁，App 收到“已停止”后重新拿锁、恢复本地扫描。后台服务意外退出时锁随之释放，App 每 30 秒检查一次，发现锁空着就接手
+- 后台服务用 App 里的 `sist-worker`（`WorkerLocator` 会到外层 App 的 `Contents/MacOS` 里找）；`make-app.sh` 把它打进包里并先于 App 签名
 
 **写入**：只有一个写入者。解析结果攒够 512 条、32 MB 或 2 秒就交给后台写一个事务，写的同时继续给解析器派活；下一次写入要等上一次完成，所以写入仍然串行、内存有上限。CJK 改写这类 CPU 工作在解析任务里并行做完，不占写入者的时间。FTS5 每次提交都会落一个段，大事务能明显减少段合并（同样 1 万个文档：64 条一个事务 1.95 秒，1024 条 1.03 秒）。
 
@@ -461,7 +469,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 **阶段二（格式与后台）**
 - [x] mobi/azw3、eml/emlx/mbox（MIME 解析，附件作为成员）
 - [x] pst（ANSI、Unicode）、msg
-- [ ] 后台扫描移到登录项 agent（`SMAppService`），关闭窗口后继续更新
+- [x] 后台扫描移到登录项 agent（`SMAppService`），关闭窗口、退出 App 后继续更新
 - [ ] 模糊搜索建议、路径补全、保存的搜索
 - [ ] Finder 标签与应用标签双向同步（`URLResourceValues.tagNames`）
 
@@ -476,7 +484,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 | 部分 | 验证方式 |
 |---|---|
-| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，105 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
+| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，109 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
 | PDFKit/ImageIO/Vision/AVFoundation/CoreText/QuickLook 解析器、SwiftUI App | macOS 15 runner 上编译通过，`make-app.sh` 打出的 arm64 + x86_64 通用 `Sist.app` 通过 `codesign --verify --strict` |
 | 界面交互、各 Apple 框架解析器对真实文件的效果 | 尚未验证：CI 只编译不运行界面，也没有 PDF/图片/音视频的样例文件测试。需要在 Mac 上实际走查 |
 

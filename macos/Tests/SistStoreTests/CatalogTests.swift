@@ -536,3 +536,73 @@ func doc(_ path: String, parent: String? = nil, content: String? = nil, mime: St
     }
     #endif
 }
+
+@Suite struct VectorScanTests {
+    /// Deterministic vectors that point every which way
+    func vector(_ seed: Int, dimensions: Int = 37) -> [Float] {
+        (0..<dimensions).map { Float(sin(Double(seed * 7919 + $0 * 104_729) * 0.001)) }
+    }
+
+    @Test func topKKeepsTheBest() {
+        var top = TopK(limit: 3)
+        let scores: [(Int64, Float)] = [(1, 0.5), (2, 0.9), (3, 0.1), (4, 0.7), (5, 0.9), (6, 0.3), (7, 0.6)]
+        for (id, score) in scores {
+            top.insert((id, score, 0))
+        }
+        // Equal scores: the smaller id first
+        #expect(top.sorted().map(\.id) == [2, 5, 4])
+    }
+
+    @Test func similarityMatchesTheDecodedVector() throws {
+        // 37 dimensions: two runs of sixteen and a remainder
+        let stored = VectorCodec.encode(vector(1))
+        let unit = VectorCodec.normalized(vector(2))
+        let decoded = try #require(VectorCodec.decode(stored))
+        let expected = zip(decoded, unit).reduce(Float(0)) { $0 + $1.0 * $1.1 }
+        #expect(abs(try #require(VectorCodec.similarity(stored, unitQuery: unit)) - expected) < 1e-4)
+        #expect(VectorCodec.similarity(stored, unitQuery: VectorCodec.normalized(vector(2, dimensions: 36))) == nil)
+    }
+
+    /// More documents than the limit, several passages each, another model's vectors alongside:
+    /// the scan agrees with comparing every vector
+    @Test func nearestAgreesWithAFullComparison() async throws {
+        let (catalog, directory) = try makeCatalog()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let source = try await catalog.addSource(root: "/v")
+        let scan = try await catalog.writer.beginScan(sourceId: source.id)
+        try await catalog.writer.write((0..<60).map { doc("/v/\($0).txt", content: "text \($0)") },
+                                       source: source, scanId: scan)
+
+        var updates: [SemanticUpdate] = []
+        var expected: [Int64: (score: Float, chunk: Int)] = [:]
+        let query = vector(1000)
+        let unit = VectorCodec.normalized(query)
+        for index in 0..<60 {
+            let id = try #require(try await catalog.documentId(path: "/v/\(index).txt"))
+            let passages = (0...(index % 3)).map { (chunk: $0, embedding: Embedding(model: "m", vector: vector(index * 10 + $0))) }
+            updates.append(SemanticUpdate(documentId: id, scanId: scan, kind: .text, embeddings: passages))
+            // The same documents in another space, closer to the query than anything: never compared
+            updates.append(SemanticUpdate(documentId: id, scanId: scan, kind: .image,
+                                          embeddings: [(0, Embedding(model: "other", vector: query))]))
+            for passage in passages {
+                let decoded = try #require(VectorCodec.decode(VectorCodec.encode(passage.embedding.vector)))
+                let score = zip(decoded, unit).reduce(Float(0)) { $0 + $1.0 * $1.1 }
+                if score > expected[id]?.score ?? -.infinity {
+                    expected[id] = (score, passage.chunk)
+                }
+            }
+        }
+        try await catalog.store(updates)
+
+        let best = expected.sorted { $0.value.score > $1.value.score }
+        let excluded = best[0].key
+        let found = try await catalog.pool.read { db in
+            try Catalog.nearest(Embedding(model: "m", vector: query), limit: 10, excluding: excluded, db: db)
+        }
+        #expect(found.map(\.id) == best.dropFirst().prefix(10).map(\.key))
+        #expect(found.map(\.chunk) == best.dropFirst().prefix(10).map(\.value.chunk))
+        for match in found {
+            #expect(abs(match.score - (expected[match.id]?.score ?? 0)) < 1e-4)
+        }
+    }
+}

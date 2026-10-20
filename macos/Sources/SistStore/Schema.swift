@@ -214,16 +214,18 @@ enum Schema {
         migrator.registerMigration("v7") { db in
             try db.execute(sql: """
                 -- Semantic search: a vector per passage of text (kind 'text'), or per image ('image'),
-                -- quantized (VectorCodec). Vectors of different models are never compared.
+                -- quantized (VectorCodec). Vectors of different models are never compared. Keyed by
+                -- model first: a search reads one model's vectors as one sequential range, already
+                -- grouped by document.
                 CREATE TABLE embedding (
+                    model TEXT NOT NULL,
                     documentId INTEGER NOT NULL REFERENCES document(id) ON DELETE CASCADE,
                     kind TEXT NOT NULL,
                     chunk INTEGER NOT NULL,
-                    model TEXT NOT NULL,
                     vector BLOB NOT NULL,
-                    PRIMARY KEY (documentId, kind, chunk)
+                    PRIMARY KEY (model, documentId, kind, chunk)
                 ) WITHOUT ROWID;
-                CREATE INDEX embedding_model ON embedding(model);
+                CREATE INDEX embedding_document ON embedding(documentId, kind);
 
                 -- The parse (scan id) each document was last analysed for: a document parsed again
                 -- is analysed again

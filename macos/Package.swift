@@ -30,6 +30,8 @@ let package = Package(
                 "SistCore",
                 "CSistZlib",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                // The SQLite C API, for the vector scan
+                .product(name: "GRDBSQLite", package: "GRDB.swift"),
             ]
         ),
 

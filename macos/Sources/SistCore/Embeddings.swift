@@ -106,15 +106,31 @@ public enum VectorCodec {
 
     /// The cosine similarity of a stored vector and a unit-length query, without decoding it
     public static func similarity(_ data: Data, unitQuery query: [Float]) -> Float? {
-        guard data.count == 4 + query.count else { return nil }
-        return data.withUnsafeBytes { raw -> Float in
-            let bytes = raw.bindMemory(to: UInt8.self)
-            let bits = UInt32(bytes[0]) | UInt32(bytes[1]) << 8 | UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24
-            var sum: Float = 0
-            for index in 0..<query.count {
-                sum += Float(Int8(bitPattern: bytes[4 + index])) * query[index]
-            }
-            return sum * Float(bitPattern: bits)
+        query.withUnsafeBufferPointer { similarity(data, unitQuery: $0) }
+    }
+
+    public static func similarity(_ data: Data, unitQuery query: UnsafeBufferPointer<Float>) -> Float? {
+        data.withUnsafeBytes { similarity($0, unitQuery: query) }
+    }
+
+    /// The same on bytes read in place, sixteen dimensions at a time
+    public static func similarity(_ stored: UnsafeRawBufferPointer, unitQuery query: UnsafeBufferPointer<Float>) -> Float? {
+        guard stored.count == 4 + query.count, let base = stored.baseAddress,
+              let queryBase = query.baseAddress else { return nil }
+        let scale = Float(bitPattern: UInt32(littleEndian: base.loadUnaligned(as: UInt32.self)))
+        let floats = UnsafeRawPointer(queryBase)
+        var accumulator = SIMD16<Float>(repeating: 0)
+        var index = 0
+        while index + 16 <= query.count {
+            let vector = SIMD16<Float>(base.loadUnaligned(fromByteOffset: 4 + index, as: SIMD16<Int8>.self))
+            accumulator += vector * floats.loadUnaligned(fromByteOffset: index * 4, as: SIMD16<Float>.self)
+            index += 16
         }
+        var sum = accumulator.sum()
+        while index < query.count {
+            sum += Float(Int8(bitPattern: base.load(fromByteOffset: 4 + index, as: UInt8.self))) * query[index]
+            index += 1
+        }
+        return sum * scale
     }
 }

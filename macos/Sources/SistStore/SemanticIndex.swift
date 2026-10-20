@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import GRDBSQLite
 import SistCore
 
 public enum EmbeddingKind: String, Sendable, CaseIterable {
@@ -137,7 +138,7 @@ extension Catalog {
                 """)
             let deleteVectors = try db.cachedStatement(sql: "DELETE FROM embedding WHERE documentId = ? AND kind = ?")
             let insertVector = try db.cachedStatement(sql: """
-                INSERT OR REPLACE INTO embedding (documentId, kind, chunk, model, vector) VALUES (?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO embedding (model, documentId, kind, chunk, vector) VALUES (?, ?, ?, ?, ?)
                 """)
             let markDone = try db.cachedStatement(sql: """
                 INSERT OR REPLACE INTO embedding_status (documentId, kind, scanId) VALUES (?, ?, ?)
@@ -147,7 +148,7 @@ extension Catalog {
                       (row["scanId"] as Int64) == update.scanId else { continue }
                 try deleteVectors.execute(arguments: [update.documentId, update.kind.rawValue])
                 for (chunk, embedding) in update.embeddings {
-                    try insertVector.execute(arguments: [update.documentId, update.kind.rawValue, chunk, embedding.model,
+                    try insertVector.execute(arguments: [embedding.model, update.documentId, update.kind.rawValue, chunk,
                                                          VectorCodec.encode(embedding.vector)])
                 }
                 if !update.labels.isEmpty {
@@ -195,22 +196,93 @@ extension Catalog {
     // MARK: Search
 
     /// The documents closest to `query`, best first, each with the passage that matched best: a
-    /// linear scan of the model's vectors (as sist2's SQLite backend does), fast enough for
-    /// hundreds of thousands of vectors.
+    /// linear scan of the model's vectors (as sist2's SQLite backend does). The rows come grouped
+    /// by document and are read in place, straight from SQLite (GRDB's rows double the time of a
+    /// scan this size); the best `limit` documents are kept in a heap.
     static func nearest(_ query: Embedding, limit: Int, excluding excluded: Int64?,
                         db: Database) throws -> [(id: Int64, score: Float, chunk: Int)] {
         let unit = VectorCodec.normalized(query.vector)
-        var best: [Int64: (score: Float, chunk: Int)] = [:]
-        let rows = try Row.fetchCursor(db, sql: "SELECT documentId, chunk, vector FROM embedding WHERE model = ?",
-                                       arguments: [query.model])
-        while let row = try rows.next() {
-            let id: Int64 = row[0]
-            guard id != excluded, let score = VectorCodec.similarity(row[2], unitQuery: unit) else { continue }
-            if best[id].map({ score > $0.score }) ?? true {
-                best[id] = (score, row[1])
+        var top = TopK(limit: limit)
+        var current: (id: Int64, score: Float, chunk: Int)?
+        let statement = try db.makeStatement(sql: "SELECT documentId, chunk, vector FROM embedding WHERE model = ? ORDER BY documentId")
+        try statement.setArguments([query.model])
+        let handle = statement.sqliteStatement
+        defer { sqlite3_reset(handle) }
+        try unit.withUnsafeBufferPointer { unitQuery in
+            while true {
+                let code = sqlite3_step(handle)
+                guard code == SQLITE_ROW else {
+                    guard code == SQLITE_DONE else {
+                        throw DatabaseError(resultCode: ResultCode(rawValue: code),
+                                            message: String(cString: sqlite3_errmsg(db.sqliteConnection)),
+                                            sql: statement.sql)
+                    }
+                    break
+                }
+                let id = sqlite3_column_int64(handle, 0)
+                guard id != excluded, let blob = sqlite3_column_blob(handle, 2) else { continue }
+                let stored = UnsafeRawBufferPointer(start: blob, count: Int(sqlite3_column_bytes(handle, 2)))
+                guard let score = VectorCodec.similarity(stored, unitQuery: unitQuery) else { continue }
+                if let best = current, best.id != id {
+                    top.insert(best)
+                    current = nil
+                }
+                if current.map({ score > $0.score }) ?? true {
+                    current = (id, score, Int(sqlite3_column_int(handle, 1)))
+                }
             }
         }
-        return best.sorted { $0.value.score > $1.value.score || ($0.value.score == $1.value.score && $0.key < $1.key) }
-            .prefix(limit).map { ($0.key, $0.value.score, $0.value.chunk) }
+        if let best = current {
+            top.insert(best)
+        }
+        return top.sorted()
+    }
+}
+
+/// The best `limit` of a stream of scored documents: a min-heap on the score.
+struct TopK {
+    let limit: Int
+    private var heap: [(id: Int64, score: Float, chunk: Int)] = []
+
+    init(limit: Int) {
+        self.limit = limit
+        heap.reserveCapacity(limit)
+    }
+
+    /// Lower score first; for equal scores the larger id, so that smaller ids win ties
+    private static func below(_ a: (id: Int64, score: Float, chunk: Int), _ b: (id: Int64, score: Float, chunk: Int)) -> Bool {
+        a.score < b.score || (a.score == b.score && a.id > b.id)
+    }
+
+    mutating func insert(_ item: (id: Int64, score: Float, chunk: Int)) {
+        guard limit > 0 else { return }
+        if heap.count < limit {
+            heap.append(item)
+            var child = heap.count - 1
+            while child > 0 {
+                let parent = (child - 1) / 2
+                guard Self.below(heap[child], heap[parent]) else { break }
+                heap.swapAt(child, parent)
+                child = parent
+            }
+        } else if Self.below(heap[0], item) {
+            heap[0] = item
+            var parent = 0
+            while true {
+                let left = 2 * parent + 1
+                let right = left + 1
+                var smallest = parent
+                if left < heap.count, Self.below(heap[left], heap[smallest]) { smallest = left }
+                if right < heap.count, Self.below(heap[right], heap[smallest]) { smallest = right }
+                guard smallest != parent else { break }
+                heap.swapAt(parent, smallest)
+                parent = smallest
+            }
+        }
+    }
+
+    /// Best first
+    func sorted() -> [(id: Int64, score: Float, chunk: Int)] {
+        heap.sorted { Self.below($1, $0) }
     }
 }

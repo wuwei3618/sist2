@@ -20,6 +20,10 @@ public struct OLEOfficeExtractor: Extractor {
             throw ExtractionError.invalidFormat("larger than \(Self.maxSize / 1024 / 1024) MB")
         }
         let file = try CompoundFile([UInt8](data))
+        if file.stream(named: OutlookMessage.propertiesStream) != nil {
+            try OutlookExtractor.index(OutlookMessage(file: file).summary(), into: &result, context: context)
+            return
+        }
 
         // Readable even when the document is password protected
         if let summary = file.stream(named: "\u{05}SummaryInformation") {
@@ -52,6 +56,8 @@ public struct OLEOfficeExtractor: Extractor {
 /// short streams, never a crash or an endless loop.
 struct CompoundFile {
     struct Entry {
+        /// Position in the directory, for `children(of:)`
+        var index: Int
         var name: String
         /// 1 storage, 2 stream, 5 root
         var type: UInt8
@@ -121,6 +127,7 @@ struct CompoundFile {
                 size &= 0xFFFF_FFFF
             }
             entries.append(Entry(
+                index: entries.count,
                 name: String(decoding: units, as: UTF16.self),
                 type: directory[offset + 0x42],
                 left: Bytes.u32(directory, offset + 0x44),
@@ -142,13 +149,15 @@ struct CompoundFile {
         miniFat = (0..<(miniFatBytes.count / 4)).map { Bytes.u32(miniFatBytes, $0 * 4) }
     }
 
-    /// A stream directly under the root storage. Names compare case-insensitively, as in [MS-CFB].
-    func stream(named name: String) -> [UInt8]? {
+    /// A stream directly under the root storage, or under `storage`. Names compare
+    /// case-insensitively, as in [MS-CFB].
+    func stream(named name: String, in storage: Int = 0) -> [UInt8]? {
+        child(named: name, of: storage, type: 2).map(read)
+    }
+
+    func child(named name: String, of storage: Int, type: UInt8) -> Entry? {
         let wanted = name.uppercased()
-        guard let entry = children(of: 0).first(where: { $0.type == 2 && $0.name.uppercased() == wanted }) else {
-            return nil
-        }
-        return read(entry)
+        return children(of: storage).first { $0.type == type && $0.name.uppercased() == wanted }
     }
 
     /// The entries of a storage: its child and that child's siblings (a red-black tree)

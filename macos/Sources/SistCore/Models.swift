@@ -198,7 +198,8 @@ public struct ScanOptions: Codable, Sendable, Hashable {
     public var treatPackagesAsFiles: Bool = true
     /// Only use the file extension to determine the media type (sist2 `--fast`)
     public var fast: Bool = false
-    /// Seconds before a parse job is abandoned and its worker killed (sist2 `--job-timeout`)
+    /// Seconds a parse job may go without producing anything before it is abandoned and its worker
+    /// killed (sist2 `--job-timeout`). Archives and mailboxes that keep producing members go on.
     public var jobTimeout: Double = 60
     /// Number of parsers running at once, 0 for one per core
     public var threads: Int = 0

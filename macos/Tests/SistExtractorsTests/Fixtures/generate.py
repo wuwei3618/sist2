@@ -6,7 +6,8 @@ as gutenberg.org builds it for Kindle, downloaded from
 https://www.gutenberg.org/ebooks/23839.kindle.noimages and .kf8.images.
 
 Needs: bsdtar (libarchive-tools), rar (rarlab.com), LibreOffice (soffice), python-pptx, openpyxl.
-The mail fixtures (chinese.eml, message.emlx, inbox.mbox) only need Python's email and mailbox.
+The mail fixtures (chinese.eml, message.emlx, inbox.mbox) only need Python's email and mailbox;
+outlook.msg and archive.pst are written by outlook.py.
     python3 generate.py
 
 The tests assert on the words written here, so keep them in sync with ArchiveTests/OLETests.
@@ -241,9 +242,94 @@ def mail():
     box.close()
 
 
+def outlook_files():
+    """Checked with independent readers before use: extract-msg reads outlook.msg, and libpst
+    (readpst -D) and libpff (pypff) read archive.pst and ansi.pst with the same folders, messages,
+    bodies and attachments."""
+    import outlook
+    from outlook import PT_INT32, PT_STRING, PT_TIME, filetime
+
+    with open(out("outlook.msg"), "wb") as f:
+        f.write(outlook.write_msg(
+            subject="周报：项目进度", sender_name="王五", sender_email="wangwu@example.com", to="李四; 赵六", cc="",
+            body="各位：\r\n本周完成了索引模块。msg body walrus\r\n", html=None, sent=1709620200,
+            recipients=[("李四", "lisi@example.com", 1), ("赵六", "zhaoliu@example.com", 1)],
+            attachments=[("会议纪要.txt", "附件文字 msg attachment walrus".encode("utf-8")),
+                         ("big.bin", bytes(range(256)) * 20)]))
+
+    def message(subject, sender, email, to, body, when, cc=None):
+        properties = [
+            (0x001A, PT_STRING, "IPM.Note"), (0x0037, PT_STRING, subject), (0x0E1D, PT_STRING, subject),
+            (0x0C1A, PT_STRING, sender), (0x0C1F, PT_STRING, email), (0x0C1E, PT_STRING, "SMTP"),
+            (0x0042, PT_STRING, sender), (0x0E04, PT_STRING, to), (0x1000, PT_STRING, body),
+            (0x0039, PT_TIME, filetime(when)), (0x0E06, PT_TIME, filetime(when)), (0x3FDE, PT_INT32, 65001),
+            (0x0E08, PT_INT32, len(body) * 2)]
+        if cc:
+            properties.append((0x0E03, PT_STRING, cc))
+        return properties
+
+    pst = outlook.PSTWriter()
+    top, inbox, deleted, project = 0x8022, 0x8042, 0x8062, 0x8082
+    nids = [(0x10000 + k) << 5 | outlook.TYPE_MESSAGE for k in range(4)]
+    when = [1709620200, 1709706600, 1709793000, 1709879400]
+    subjects = ["季度报告：华东地区", "长邮件", "转发：项目计划", "deleted penguins"]
+    pst.store("个人文件夹", top, deleted)
+    pst.folder(outlook.NID_ROOT_FOLDER, outlook.NID_ROOT_FOLDER, "", [(top, "个人文件夹", True)], [])
+    pst.folder(top, outlook.NID_ROOT_FOLDER, "个人文件夹", [(inbox, "收件箱", True), (deleted, "已删除邮件", False)], [])
+    pst.folder(inbox, top, "收件箱", [(project, "项目", False)],
+               [(nids[k], subjects[k], filetime(when[k])) for k in (0, 1)])
+    pst.folder(project, inbox, "项目", [], [(nids[2], subjects[2], filetime(when[2]))])
+    pst.folder(deleted, top, "已删除邮件", [], [(nids[3], subjects[3], filetime(when[3]))])
+
+    # A 20000-byte attachment and a 6000-character body need data trees of several blocks
+    big = bytes((i * 7) % 251 for i in range(20000))
+    pst.message(nids[0], inbox,
+                message(subjects[0], "张三", "zhangsan@example.com", "李四",
+                        "各位：\r\n附件是华东地区的季度销售数据。pst body walrus", when[0], cc="赵六"),
+                [("李四", "lisi@example.com", 1), ("赵六", "zhaoliu@example.com", 2)],
+                [("file", "销售数据.txt", "附件里的文字 pst attachment walrus".encode()), ("file", "大附件.bin", big)])
+    pst.message(nids[1], inbox,
+                message(subjects[1], "李四", "lisi@example.com", "张三", "长文本" * 2000 + " long body end marker", when[1]),
+                [("张三", "zhangsan@example.com", 1)], [])
+    embedded = (message("原始邮件", "王五", "wangwu@example.com", "李四", "被转发的原始邮件正文 embedded walrus", when[2] - 3600),
+                [("李四", "lisi@example.com", 1)], [("file", "计划.txt", "嵌套附件 nested walrus".encode())])
+    pst.message(nids[2], project, message(subjects[2], "李四", "lisi@example.com", "张三", "请看转发的邮件。", when[2]),
+                [("张三", "zhangsan@example.com", 1)], [("message", "原始邮件", embedded)])
+    pst.message(nids[3], deleted,
+                message(subjects[3], "Carol", "carol@example.com", "Dave", "a deleted message about penguins", when[3]),
+                [("Dave", "dave@example.com", 1)], [])
+    with open(out("archive.pst"), "wb") as f:
+        f.write(pst.write())
+
+    # The ANSI format of Outlook 97-2002: 8-bit text in the message's code page, and a folder
+    # name in GBK with no code page at all
+    def ansi_message(subject, sender, to, body, when, codepage):
+        encoding = "gbk" if codepage == 936 else "cp1252"
+        return [(0x001A, outlook.PT_STRING8, b"IPM.Note"), (0x0037, outlook.PT_STRING8, subject.encode(encoding)),
+                (0x0C1A, outlook.PT_STRING8, sender.encode(encoding)), (0x0E04, outlook.PT_STRING8, to.encode(encoding)),
+                (0x1000, outlook.PT_STRING8, body.encode(encoding)), (0x0E06, PT_TIME, filetime(when)),
+                (0x3FFD, PT_INT32, codepage), (0x3FDE, PT_INT32, codepage)]
+
+    ansi = outlook.PSTWriter(unicode=False)
+    inbox_name = "收件箱".encode("gbk")
+    first, second = 0x10000 << 5 | outlook.TYPE_MESSAGE, 0x10001 << 5 | outlook.TYPE_MESSAGE
+    ansi.store("个人文件夹", top, inbox)
+    ansi.folder(outlook.NID_ROOT_FOLDER, outlook.NID_ROOT_FOLDER, "", [(top, "个人文件夹", True)], [])
+    ansi.folder(top, outlook.NID_ROOT_FOLDER, "个人文件夹", [(inbox, inbox_name, False)], [])
+    ansi.folder(inbox, top, inbox_name, [], [(first, "旧格式邮件", filetime(1000000000)), (second, "café", filetime(1000003600))])
+    ansi.message(first, inbox, ansi_message("旧格式邮件", "张三", "李四", "ANSI 格式的正文 ansi walrus " + "很长" * 3000,
+                                            1000000000, 936),
+                 [("李四", "lisi@example.com", 1)], [("file", "附件.txt", b"ansi attachment")])
+    ansi.message(second, inbox, ansi_message("café", "Zoë", "Dave", "latin body café", 1000003600, 1252),
+                 [("Dave", "d@example.com", 1)], [])
+    with open(out("ansi.pst"), "wb") as f:
+        f.write(ansi.write())
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as tmp:
         archives(tmp)
         office(tmp)
     mail()
+    outlook_files()
     print("fixtures written to", HERE)

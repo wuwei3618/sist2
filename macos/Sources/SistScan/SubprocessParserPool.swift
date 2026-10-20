@@ -8,8 +8,8 @@ import Glibc
 #endif
 
 /// Parses in long-lived `sist-worker` processes, as sist2's scan master does: a parser that
-/// crashes takes down its worker, not the scan, and a job that runs past `jobTimeout` gets its
-/// worker killed. Either way the worker is replaced on the next job.
+/// crashes takes down its worker, not the scan, and a job that produces nothing for `jobTimeout`
+/// seconds gets its worker killed. Either way the worker is replaced on the next job.
 public final class SubprocessParserPool: ParserPool, @unchecked Sendable {
     public let capacity: Int
     private let executable: URL
@@ -114,6 +114,13 @@ final class WorkerProcess: @unchecked Sendable {
     private let lock = NSLock()
     private var alive = true
     private var killedForTimeout = false
+    /// The job the watchdog looks after, and when it last sent something
+    private var job = 0
+    private var lastProgress = Date()
+
+    /// A job that keeps producing documents (a large archive or mailbox) may run this many
+    /// timeouts in total
+    static let maxJobTimeouts = 30.0
 
     // Frame reads block, so they run here rather than on the Swift concurrency pool
     private static let ioQueue = DispatchQueue(label: "sist.worker-io", attributes: .concurrent)
@@ -145,11 +152,18 @@ final class WorkerProcess: @unchecked Sendable {
     }
 
     private func runBlocking(_ entry: FileEntry, timeout: TimeInterval, log: LogHandler?) -> ParseJobResult {
-        let watchdog = DispatchWorkItem { [weak self] in
-            self?.kill(forTimeout: true)
+        lock.lock()
+        job += 1
+        let currentJob = job
+        let started = Date()
+        lastProgress = started
+        lock.unlock()
+        watch(job: currentJob, after: timeout, timeout: timeout, started: started)
+        defer {
+            lock.lock()
+            job += 1
+            lock.unlock()
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
-        defer { watchdog.cancel() }
 
         let decoder = JSONDecoder()
         var results: [ParseResult] = []
@@ -159,6 +173,9 @@ final class WorkerProcess: @unchecked Sendable {
                 guard let frame = try channel.read() else {
                     throw FrameError.truncated
                 }
+                lock.lock()
+                lastProgress = Date()
+                lock.unlock()
                 switch frame.type {
                 case .document:
                     results.append(ParseResult(document: try decoder.decode(ParsedDocument.self, from: frame.payload)))
@@ -183,9 +200,26 @@ final class WorkerProcess: @unchecked Sendable {
             lock.unlock()
             kill(forTimeout: false)
             let reason = timedOut
-                ? "Parsing took longer than \(Int(timeout))s, worker killed"
+                ? "Parsing stalled for \(Int(timeout))s, worker killed"
                 : "Worker died (\(error))"
             return ParseJobResult(entry: entry, results: results, error: reason)
+        }
+    }
+
+    /// Kills the worker once the job has sent nothing for `timeout`, or has run far too long
+    private func watch(job watched: Int, after delay: TimeInterval, timeout: TimeInterval, started: Date) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let current = self.job == watched
+            let idle = Date().timeIntervalSince(self.lastProgress)
+            self.lock.unlock()
+            guard current else { return }
+            if idle >= timeout || Date().timeIntervalSince(started) >= timeout * Self.maxJobTimeouts {
+                self.kill(forTimeout: true)
+            } else {
+                self.watch(job: watched, after: timeout - idle, timeout: timeout, started: started)
+            }
         }
     }
 

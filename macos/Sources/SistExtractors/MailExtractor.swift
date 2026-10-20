@@ -44,40 +44,7 @@ public struct MailExtractor: Extractor {
     }
 
     static func index(_ message: MIMEPart, into result: inout Extracted, context: ExtractionContext) {
-        let subject = message.header("subject")
-        result.title = subject
-        let date = message.header("date").flatMap(MailDate.parse)
-        result.setMetadata(MetaKey.emailFrom, message.header("from"))
-        result.setMetadata(MetaKey.emailTo, message.header("to"))
-        result.setMetadata(MetaKey.emailCc, message.header("cc"))
-        if let date {
-            result.setMetadata(MetaKey.emailDate, date.formatted(.iso8601))
-        }
-
-        for (label, field) in [("From", "from"), ("To", "to"), ("Cc", "cc"), ("Date", "date")] {
-            if let value = message.header(field), !value.isEmpty {
-                result.content.appendLine("\(label): \(value)")
-            }
-        }
-
-        var body = MailBody()
-        body.collect(message, depth: 0)
-        for text in body.texts {
-            result.content.appendLine(text)
-        }
-        if !body.attachments.isEmpty {
-            result.content.appendLine("Attachments: " + body.attachments.map(\.name).joined(separator: ", "))
-        }
-
-        guard emitsMembers(context) else { return }
-        let mtime = date.map { Int64($0.timeIntervalSince1970) } ?? 0
-        var used = Set<String>()
-        for attachment in body.attachments {
-            let name = uniqueName(attachment.name, used: &used)
-            let tooLarge = Int64(attachment.data.count) > context.options.maxArchiveMemberSize
-            context.parseMember(ArchiveMember(path: name, data: tooLarge ? nil : Data(attachment.data),
-                                              mtime: mtime, size: Int64(attachment.data.count)))
-        }
+        MessageSummary(message).index(into: &result, context: context)
     }
 
     static func uniqueName(_ name: String, used: inout Set<String>) -> String {
@@ -130,11 +97,8 @@ public struct MailExtractor: Extractor {
                 return Data(message.bytes)
             }
         } else {
-            let message = MIMEPart(unwrapEMLX([UInt8](try input.read(limit: intLimit + 1)))[...])
-            var body = MailBody()
-            body.collect(message, depth: 0)
-            var used = Set<String>()
-            for attachment in body.attachments where uniqueName(attachment.name, used: &used) == name {
+            let message = MessageSummary(MIMEPart(unwrapEMLX([UInt8](try input.read(limit: intLimit + 1)))[...]))
+            if let attachment = message.namedAttachments.first(where: { $0.name == name }) {
                 return Data(attachment.data)
             }
         }
@@ -223,6 +187,106 @@ struct MailboxMessages {
             String(format: "%05d ", count) + MailExtractor.fileName(subject, fallback: "message") + ".eml", used: &used)
         return Message(name: name, subject: subject, date: headers.header("date").flatMap(MailDate.parse),
                        bytes: current, size: currentSize, isComplete: currentSize <= limit)
+    }
+}
+
+/// What indexing needs of a message, whatever format it comes in: MIME, or Outlook's .msg and
+/// .pst, whose messages are turned into MIME (`rfc822`) to become members.
+struct MessageSummary {
+    var subject: String?
+    var from: String?
+    var to: String?
+    var cc: String?
+    var date: Date?
+    var texts: [String] = []
+    var attachments: [(name: String, data: [UInt8])] = []
+
+    init() {}
+
+    init(_ message: MIMEPart) {
+        subject = message.header("subject")
+        from = message.header("from")
+        to = message.header("to")
+        cc = message.header("cc")
+        date = message.header("date").flatMap(MailDate.parse)
+        var body = MailBody()
+        body.collect(message, depth: 0)
+        texts = body.texts
+        attachments = body.attachments
+    }
+
+    /// Attachments under the names their members get: duplicates numbered
+    var namedAttachments: [(name: String, data: [UInt8])] {
+        var used = Set<String>()
+        return attachments.map { (MailExtractor.uniqueName($0.name, used: &used), $0.data) }
+    }
+
+    func index(into result: inout Extracted, context: ExtractionContext) {
+        result.title = subject
+        result.setMetadata(MetaKey.emailFrom, from)
+        result.setMetadata(MetaKey.emailTo, to)
+        result.setMetadata(MetaKey.emailCc, cc)
+        if let date {
+            result.setMetadata(MetaKey.emailDate, date.formatted(.iso8601))
+        }
+
+        for (label, value) in [("From", from), ("To", to), ("Cc", cc), ("Date", date.map(MailDate.format))] {
+            if let value, !value.isEmpty {
+                result.content.appendLine("\(label): \(value)")
+            }
+        }
+        for text in texts {
+            result.content.appendLine(text)
+        }
+        if !attachments.isEmpty {
+            result.content.appendLine("Attachments: " + attachments.map(\.name).joined(separator: ", "))
+        }
+
+        guard MailExtractor.emitsMembers(context) else { return }
+        let mtime = date.map { Int64($0.timeIntervalSince1970) } ?? 0
+        for attachment in namedAttachments {
+            let tooLarge = Int64(attachment.data.count) > context.options.maxArchiveMemberSize
+            context.parseMember(ArchiveMember(path: attachment.name, data: tooLarge ? nil : Data(attachment.data),
+                                              mtime: mtime, size: Int64(attachment.data.count)))
+        }
+    }
+
+    /// The message as RFC 5322 text: UTF-8 header fields as encoded words, the body as UTF-8 text,
+    /// attachments as base64 parts.
+    func rfc822() -> [UInt8] {
+        var out = ""
+        for (name, value) in [("From", from), ("To", to), ("Cc", cc), ("Subject", subject)] {
+            if let value, !value.isEmpty {
+                out += "\(name): \(HeaderText.encode(value))\r\n"
+            }
+        }
+        if let date {
+            out += "Date: \(MailDate.format(date))\r\n"
+        }
+        out += "MIME-Version: 1.0\r\n"
+        let text = Self.base64(Array(texts.joined(separator: "\n\n").utf8))
+        let textHeaders = "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n"
+        guard !attachments.isEmpty else {
+            return Array((out + textHeaders + "\r\n" + text).utf8)
+        }
+        // "=" never occurs at the start of a base64 line, nor "_" in base64 at all
+        let boundary = "=_sist_part_="
+        out += "Content-Type: multipart/mixed; boundary=\"\(boundary)\"\r\n\r\n"
+        out += "--\(boundary)\r\n" + textHeaders + "\r\n" + text
+        for attachment in attachments {
+            let name = HeaderText.percentEncode(attachment.name)
+            out += "--\(boundary)\r\nContent-Type: application/octet-stream\r\n"
+            out += "Content-Disposition: attachment; filename*=utf-8''\(name)\r\n"
+            out += "Content-Transfer-Encoding: base64\r\n\r\n" + Self.base64(attachment.data)
+        }
+        out += "--\(boundary)--\r\n"
+        return Array(out.utf8)
+    }
+
+    static func base64(_ bytes: [UInt8]) -> String {
+        let encoded = Data(bytes).base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn,
+                                                                  .endLineWithLineFeed])
+        return encoded.isEmpty ? "" : encoded + "\r\n"
     }
 }
 
@@ -580,6 +644,28 @@ enum HeaderText {
         return Parameters(value: value, parameters: plain)
     }
 
+    /// A header value as an encoded word, unless it is plain ASCII
+    static func encode(_ value: String) -> String {
+        if value.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value < 0x7F }) && !value.contains("=?") {
+            return value
+        }
+        return "=?UTF-8?B?" + Data(value.utf8).base64EncodedString() + "?="
+    }
+
+    /// RFC 2231 / RFC 3986: everything but unreserved characters as %XX
+    static func percentEncode(_ value: String) -> String {
+        var out = ""
+        for byte in value.utf8 {
+            switch byte {
+            case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0x2D, 0x2E, 0x5F, 0x7E:
+                out.append(Character(Unicode.Scalar(byte)))
+            default:
+                out += String(format: "%%%02X", byte)
+            }
+        }
+        return out
+    }
+
     static func percentDecode(_ text: Substring) -> [UInt8] {
         let utf8 = Array(text.utf8)
         var out: [UInt8] = []
@@ -679,6 +765,17 @@ enum MailDate {
     static let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
     static let zones: [String: Int] = ["ut": 0, "utc": 0, "gmt": 0, "z": 0, "est": -5, "edt": -4, "cst": -6,
                                        "cdt": -5, "mst": -7, "mdt": -6, "pst": -8, "pdt": -7]
+
+    /// `Tue, 05 Mar 2024 06:30:00 +0000`
+    static func format(_ date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let c = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second, .weekday], from: date)
+        let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        let month = months[(c.month ?? 1) - 1].capitalized
+        return String(format: "%@, %02d %@ %04d %02d:%02d:%02d +0000", days[(c.weekday ?? 1) - 1], c.day ?? 1, month,
+                      c.year ?? 1970, c.hour ?? 0, c.minute ?? 0, c.second ?? 0)
+    }
 
     static func parse(_ text: String) -> Date? {
         // Comments in parentheses, and the day of the week, carry nothing

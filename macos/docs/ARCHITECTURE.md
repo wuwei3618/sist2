@@ -211,6 +211,8 @@ sequenceDiagram
 | mobi、azw、azw3、prc | `MobiExtractor`：Palm 数据库 → PalmDOC（LZ77）解压 → 去标签；MOBI 6 和 KF8（azw3）都支持，两者合订的读 MOBI 6 部分 | ✓ | 封面 | 标题、作者、出版社、主题、语言 | 全部（缩略图仅 macOS） |
 | eml、emlx | `MailExtractor`：头字段、正文（纯文本优先，没有时取 HTML 去标签）；附件和转发的邮件作为成员 | ✓ | — | 主题、发件人、收件人、抄送、时间 | 全部 |
 | mbox | `MailExtractor`：逐行读取（可达数 GB），每封邮件作为成员，再递归它的附件 | 主题列表 | — | 邮件数 | 全部 |
+| msg | `OutlookExtractor`：复合文档里的 MAPI 属性；附件、嵌入的邮件作为成员 | ✓ | — | 同 eml | 全部 |
+| pst、ost | `OutlookExtractor` + `PSTFile`：按需随机读取（不整个读进内存），每封邮件作为成员 `文件夹/00001 主题.eml`，再递归附件 | 主题列表 | — | 邮件数 | 全部 |
 | xls、xlt | `OLEOfficeExtractor`：工作表名 + 共享字符串表（所有文本单元格） | ✓ | QuickLook | 标题、作者、最后修改者 | 全部 |
 | ppt、pps、pot | `OLEOfficeExtractor`：幻灯片、备注、文本框的文字，跳过母版 | ✓ | QuickLook | 标题、作者、最后修改者 | 全部 |
 | tar（含 .tar.gz/.tgz/.tar.bz2/.tar.xz）、7z、rar、zip、jar、iso、cab、cpio | `ArchiveExtractor`（libarchive），成员作为子文档递归索引；也可只列文件名 | 列表模式 | — | 成员数 | 全部 |
@@ -239,6 +241,14 @@ sequenceDiagram
 - 附件（有文件名或标为 attachment 的部分）和 message/rfc822（转发的邮件）作为成员，路径如 `邮件.eml#/报价单.xlsx`，再按类型递归解析；重名加序号。压缩包模式同样适用：不处理或只列名时只记附件名
 - mbox 按行读取，邮件以空行后的 `From ` 行分隔，正文里的 `>From ` 按 mboxrd 还原；每封邮件命名为 `00001 主题.eml` 作为成员
 - 在界面里打开附件时，`ArchiveMemberReader` 按同样的命名规则重新解析容器取出字节，支持多层（mbox → 邮件 → 附件 → 压缩包 → 文件）
+
+**Outlook（msg、pst）**：同样不依赖第三方库，按 [MS-OXMSG]、[MS-PST] 实现：
+- msg 是复合文档（复用 xls/ppt 的 OLE2 读取器），`__substg1.0_IIIITTTT` 流是变长属性，`__properties_version1.0` 流是定长属性；收件人、附件是子存储，转发的邮件是附件里的子存储
+- pst 分三层：节点数据库（NDB：按块号定位块的 B 树、列出所有节点的 B 树；节点的数据是一个块或一棵块树，外加一棵子节点树）、列表表格属性层（LTP：节点数据里的堆、堆里的 B 树、其上的属性上下文）、消息层（文件夹、邮件都是节点，附件是邮件的子节点）。支持 ANSI（Outlook 97–2002）和 Unicode 两种格式、两种加密（compressible 置换表、high 循环加密，表格与规范及 libpst、libpff 一致）；新版 .ost 的 4K 页格式不支持
+- 正文依次取纯文本、HTML（去标签）、压缩 RTF（[MS-OXRTFCP] 的 LZFu 解压后提取文字：跳过字体表等目标组，`\'hh` 按 `\ansicpg` 代码页解码，`\uN` 取字符并跳过替代字符）
+- 8 位字符串按邮件的 `PidTagInternetCodepage` / `PidTagMessageCodepage` 解码；没有代码页的（ANSI 文件里的文件夹名）按“UTF-8 → GB18030”猜
+- pst 里的邮件、msg 里嵌入的邮件都转成 MIME（`MessageSummary.rfc822()`：UTF-8 编码词、base64 附件）作为 `.eml` 成员，之后附件的索引、在界面里打开（`ArchiveMemberReader`）都和普通邮件一样，例如 `备份.pst#/收件箱/00001 报价.eml#/报价单.xlsx`
+- 测试文件：Linux 上没有能写 msg/pst 的工具，所以由 `Fixtures/outlook.py` 按规范生成，再用独立的实现校验——extract-msg 读 msg，libpst 的 readpst 和 libpff（pypff）读 pst，两者读出的文件夹、邮件、正文、附件都一致——之后才用于测试。另有随机改写/截断 250 次的损坏文件测试
 
 **为什么用系统框架**：不需要打包和维护 ffmpeg、MuPDF、tesseract 等大型 C 依赖（sist2 的 vcpkg 冷编译要几个小时），体积小，自动获得系统对新格式（HEIC、AVIF、新相机 RAW）的支持；Vision 的中文 OCR 效果和速度都好于 tesseract。代价是 AVFoundation 不支持 mkv/avi/wmv，这些文件只有文件名和 QuickLook 缩略图（见第 12 节）。
 
@@ -343,7 +353,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 - 每个 worker 同时只处理一个任务，读写不会互相死锁
 - worker 启动时 `dup` 一份 stdout 专门写帧，再把 fd 1 指向 stderr，框架的打印不会污染协议（sist2 用 fd 3/4 达到同样目的）
-- 超时（默认 60 秒，可配置）：看门狗 `SIGKILL` 该 worker，读端收到 EOF，任务以“超时”结束，下个任务换新 worker
+- 超时（默认 60 秒，可配置）：任务连续这么久没有产出任何文档时，看门狗 `SIGKILL` 该 worker，读端收到 EOF，任务以“超时”结束，下个任务换新 worker。按“无产出”而不是总时长计算，是因为一个几 GB 的压缩包、mbox 或 pst 会持续产出成员，总时长远超 60 秒也是正常的；为防万一，总时长仍以 30 倍超时为上限
 - 崩溃：同样表现为 EOF；已收到的部分结果保留
 - 失败的文件仍以文件名入库并记录错误
 - 主进程忽略 `SIGPIPE`，向已死的 worker 写入只会返回错误
@@ -372,7 +382,8 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 | xls 只索引文本单元格，不含数字和公式结果 | 只读共享字符串表 | 按需读 NUMBER/RK 记录 |
 | ppt 按流顺序取文本，反复编辑过的文件里旧版本的文字也可能被索引 | 没有解析持久化目录 | 按需 |
 | 没有声明编码的日文 Shift-JIS、繁体 Big5 文件名会解错 | 无法可靠区分，优先按简体中文 GB18030 解码 | 设置中提供文件名编码选项 |
-| djvu、pst、msg 未解析正文 | 尚未实现 | pst、msg：阶段二 |
+| djvu 未解析正文 | 尚未实现 | 按需（DjVuLibre 体积不小） |
+| Outlook 2013 起的 4K 页 .ost 不支持 | 页、块格式不同，块还可能被压缩 | 按需 |
 | HUFF/CDIC 压缩或 DRM 加密的 mobi/azw 只有元数据 | 前者少见，后者没有密钥 | 按需 |
 | iWork（pages/numbers/key）无正文 | 私有格式（IWA/protobuf） | 阶段三：读取内置预览 PDF 或 Spotlight 导入器 |
 | macOS 13 及更老的 SQLite（< 3.43）用不了 contentless FTS，索引大一些 | `contentless_delete` 需要 3.43 | 部署目标是 macOS 14，实际不会遇到 |
@@ -449,7 +460,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 **阶段二（格式与后台）**
 - [x] mobi/azw3、eml/emlx/mbox（MIME 解析，附件作为成员）
-- [ ] pst、msg
+- [x] pst（ANSI、Unicode）、msg
 - [ ] 后台扫描移到登录项 agent（`SMAppService`），关闭窗口后继续更新
 - [ ] 模糊搜索建议、路径补全、保存的搜索
 - [ ] Finder 标签与应用标签双向同步（`URLResourceValues.tagNames`）
@@ -465,7 +476,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 | 部分 | 验证方式 |
 |---|---|
-| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，79 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
+| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，105 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
 | PDFKit/ImageIO/Vision/AVFoundation/CoreText/QuickLook 解析器、SwiftUI App | macOS 15 runner 上编译通过，`make-app.sh` 打出的 arm64 + x86_64 通用 `Sist.app` 通过 `codesign --verify --strict` |
 | 界面交互、各 Apple 框架解析器对真实文件的效果 | 尚未验证：CI 只编译不运行界面，也没有 PDF/图片/音视频的样例文件测试。需要在 Mac 上实际走查 |
 

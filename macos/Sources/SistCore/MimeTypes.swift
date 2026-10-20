@@ -64,9 +64,10 @@ public enum MimeTypes {
         "doc": "application/msword",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "dotx": "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
-        "xls": "application/vnd.ms-excel",
+        "xls": "application/vnd.ms-excel", "xlt": "application/vnd.ms-excel",
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "ppt": "application/vnd.ms-powerpoint",
+        "ppt": "application/vnd.ms-powerpoint", "pps": "application/vnd.ms-powerpoint",
+        "pot": "application/vnd.ms-powerpoint",
         "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "odt": "application/vnd.oasis.opendocument.text",
         "ods": "application/vnd.oasis.opendocument.spreadsheet",
@@ -105,7 +106,8 @@ public enum MimeTypes {
         "rar": "application/vnd.rar", "tar": "application/x-tar", "gz": "application/gzip",
         "tgz": "application/gzip", "bz2": "application/x-bzip2", "xz": "application/x-xz",
         "zst": "application/zstd", "dmg": "application/x-apple-diskimage", "iso": "application/x-iso9660-image",
-        "pkg": "application/x-xar",
+        "pkg": "application/x-xar", "tbz2": "application/x-bzip2", "tbz": "application/x-bzip2",
+        "txz": "application/x-xz", "cab": "application/vnd.ms-cab-compressed", "cpio": "application/x-cpio",
         // Fonts
         "ttf": "font/ttf", "otf": "font/otf", "ttc": "font/collection", "woff": "font/woff",
         "woff2": "font/woff2", "dfont": "application/x-dfont",
@@ -140,6 +142,7 @@ public enum MimeTypes {
             "application/zip", "application/java-archive", "application/x-7z-compressed", "application/vnd.rar",
             "application/x-tar", "application/gzip", "application/x-bzip2", "application/x-xz", "application/zstd",
             "application/x-apple-diskimage", "application/x-iso9660-image", "application/x-xar",
+            "application/vnd.ms-cab-compressed", "application/x-cpio",
         ] {
             map[mime] = .archive
         }
@@ -206,6 +209,7 @@ public enum MimeTypes {
         if starts([0x1F, 0x8B]) { return "application/gzip" }
         if startsASCII("BZh") { return "application/x-bzip2" }
         if starts([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) { return "application/x-xz" }
+        if starts([0x28, 0xB5, 0x2F, 0xFD]) { return "application/zstd" }
         if startsASCII("ustar", at: 257) { return "application/x-tar" }
         if starts([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) { return "application/x-ole-storage" }
         if startsASCII("wOFF") { return "font/woff" }

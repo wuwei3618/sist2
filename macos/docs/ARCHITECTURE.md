@@ -86,7 +86,8 @@ flowchart LR
 | libscan/ooxml | docx/xlsx/pptx | ZIPFoundation + XMLParser | `SistExtractors` |
 | libantiword | .doc | AppKit `NSAttributedString`（也处理 rtf/rtfd/odt） | `SistExtractors` |
 | libscan/font（FreeType） | 字体 | CoreText 读名称，QuickLook 出预览图 | `SistExtractors` |
-| libscan/arc（libarchive） | 压缩包 | ZIPFoundation（zip/jar/cbz）；tar/7z/rar 见路线图 | `SistExtractors` |
+| libscan/arc（libarchive） | 压缩包 | 同样用 libarchive：macOS 系统自带（/usr/lib，只是没有头文件），`CArchive` 目标声明用到的函数并链接 `-larchive` | `CArchive` / `SistExtractors` |
+| （sist2 不支持） | xls、ppt | 自己解析：OLE2 复合文档容器 + Excel BIFF8 共享字符串 + PowerPoint 文本记录 | `SistExtractors` |
 | 各格式缩略图 | 缩略图 | 解析器自带缩略图，否则用 QuickLookThumbnailing 兜底（Office、iWork、视频、字体、应用图标…） | `SistExtractors` |
 | OpenSSL SHA1 | 校验和 | CryptoKit `Insecure.SHA1` | `DocumentParser` |
 | D3 统计图 | 统计页 | Swift Charts | `App/` |
@@ -128,7 +129,7 @@ SistCore        无依赖：模型、MIME、中文分词改写、查询解析、
        └─ SistApp       SwiftUI 应用（仅 macOS）
 ```
 
-`SistCore`、`SistStore`、`SistScan` 以及通用解析器不依赖任何 Apple 专有框架，可以在 Linux 上编译和跑测试；PDFKit、Vision 等解析器和 App 用 `#if canImport(...)` / `#if os(macOS)` 隔离。这样核心逻辑可以在任何 CI 上验证。
+`SistCore`、`SistStore`、`SistScan` 以及通用解析器不依赖任何 Apple 专有框架，可以在 Linux 上编译和跑测试（需要 `libsqlite3-dev`、`libarchive-dev`）；PDFKit、Vision 等解析器和 App 用 `#if canImport(...)` / `#if os(macOS)` 隔离。这样核心逻辑可以在任何 CI 上验证。
 
 ---
 
@@ -197,19 +198,29 @@ sequenceDiagram
 
 | 格式 | 实现 | 正文 | 缩略图 | 元数据 | 平台 |
 |---|---|---|---|---|---|
-| txt、md、csv、源代码、字幕、eml | `PlainTextExtractor`，BOM → UTF-8 → 系统编码探测（GB18030、Big5、Shift-JIS…） | ✓ | — | — | 全部（Linux 无 GBK 探测） |
-| html、xhtml、xml、svg、fb2 | `MarkupExtractor`，去标签、跳过 script/style、解实体 | ✓ | QuickLook | 标题 | 全部 |
+| txt、md、csv、源代码、字幕、eml | `PlainTextExtractor`，BOM → UTF-8 → 系统编码探测（GB18030、Big5、Shift-JIS…） | ✓ | — | — | 全部（Linux 只回退到 GB18030） |
+| html、xhtml、xml、svg、fb2 | `MarkupExtractor`，去标签、跳过 script/style、解实体 | ✓ | — | 标题 | 全部 |
 | json、ndjson | `JSONExtractor`，收集所有字符串值 | ✓ | — | — | 全部 |
 | docx、xlsx、pptx | `OOXMLExtractor` | ✓ | 内嵌缩略图 | 标题、作者、最后修改者 | 全部 |
 | epub | `EPUBExtractor`，按 spine 顺序 | ✓ | 封面 | 标题、作者 | 全部 |
-| zip、jar | `ZipArchiveExtractor`，成员作为子文档 | 列表模式 | — | 成员数 | 全部 |
-| cbz | 同上，只取第一页做缩略图 | — | ✓ | — | macOS |
+| xls、xlt | `OLEOfficeExtractor`：工作表名 + 共享字符串表（所有文本单元格） | ✓ | QuickLook | 标题、作者、最后修改者 | 全部 |
+| ppt、pps、pot | `OLEOfficeExtractor`：幻灯片、备注、文本框的文字，跳过母版 | ✓ | QuickLook | 标题、作者、最后修改者 | 全部 |
+| tar（含 .tar.gz/.tgz/.tar.bz2/.tar.xz）、7z、rar、zip、jar、iso、cab、cpio | `ArchiveExtractor`（libarchive），成员作为子文档递归索引；也可只列文件名 | 列表模式 | — | 成员数 | 全部 |
+| 单文件压缩 .gz、.bz2、.xz、.zst | 同上，解压出的单个文件作为成员（report.txt.gz → report.txt） | — | — | — | 全部 |
+| cbz、cbr | `ComicBookExtractor`（libarchive），按文件名取第一页做缩略图，页面不单独索引 | — | ✓ | 页数 | 缩略图仅 macOS |
 | pdf | `PDFExtractor`（PDFKit），无文字层的页可 OCR | ✓ | 首页 | 标题、作者、页数 | macOS |
 | 图片、相机 RAW、HEIC | `ImageExtractor`（ImageIO），可 OCR | OCR、EXIF 注释、IPTC | ✓ | 尺寸、EXIF、GPS | macOS |
 | 音频、视频 | `MediaExtractor`（AVFoundation） | 注释 | 视频帧 / 封面 | 时长、编码、尺寸、码率、艺术家、专辑 | macOS |
 | ttf、otf、ttc、woff | `FontExtractor`（CoreText） | 字体名 | QuickLook | 字族、样式 | macOS |
 | rtf、rtfd、doc、odt | `RichTextExtractor`（NSAttributedString） | ✓ | QuickLook | 标题、作者 | macOS |
 | pages、numbers、key、.app 等 | 不解析正文 | — | QuickLook（应用取图标） | — | macOS |
+
+**压缩包成员的文件名**：libarchive 按当前 locale 转换文件名，而 App 和 worker 运行在 C locale 下，7z、rar 里的中文名在那里会直接丢失。`ArchiveReader` 在每次调用 libarchive 时把本线程切到 UTF-8 locale（`uselocale`，不影响进程其他部分）。没有声明编码的名字（Windows 中文系统打的 zip、老 tar）按“合法 UTF-8 → GB18030 → Latin-1”的顺序解码。
+
+**xls / ppt**：没有系统框架能读这两种格式，所以自己解析。先读 OLE2 复合文档容器（FAT、DIFAT、mini stream、目录树），再从 `\u0005SummaryInformation` 取标题、作者（按其中声明的代码页解码），然后：
+- xls：遍历 Workbook 流的 BIFF8 记录，取工作表名（BOUNDSHEET）和共享字符串表（SST）。SST 会被拆进多个 CONTINUE 记录，字符串在记录边界处断开时，下一段开头有一个新的标志字节，决定后面是单字节还是双字节字符，这是最容易出错的地方，测试用 3000 条中英文交替、跨 11 个 CONTINUE 记录的文件逐条核对
+- ppt：按流顺序遍历记录，进入容器，取 TextCharsAtom / TextBytesAtom，跳过母版和讲义（只有“单击此处编辑母版标题样式”这类提示），重复文本只保留一次
+- 加密文件只索引文件名和元数据。所有读取都做边界检查，损坏文件的模糊测试（随机改写/截断 300 次）不会崩溃或死循环
 
 **为什么用系统框架**：不需要打包和维护 ffmpeg、MuPDF、tesseract 等大型 C 依赖（sist2 的 vcpkg 冷编译要几个小时），体积小，自动获得系统对新格式（HEIC、AVIF、新相机 RAW）的支持；Vision 的中文 OCR 效果和速度都好于 tesseract。代价是 AVFoundation 不支持 mkv/avi/wmv，这些文件只有文件名和 QuickLook 缩略图（见第 12 节）。
 
@@ -316,9 +327,12 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 | 限制 | 原因 | 计划 |
 |---|---|---|
-| tar、gz、7z、rar 不展开 | macOS SDK 不提供 libarchive 头文件 | 阶段二：打包 libarchive（XCFramework） |
 | mkv、avi、wmv 无元数据 | AVFoundation 不支持 | 阶段二：可选 ffprobe/ffmpeg 插件，或只依赖 QuickLook 扩展 |
-| Windows 生成的 zip 中文文件名可能乱码 | 未设置 UTF-8 标志的 zip 按 CP437 解码 | 阶段一：检测并用 GB18030 重新解码 |
+| 加密的压缩包成员、加密的 xls/ppt 只有文件名 | 没有密码 | 可以像 sist2 一样加一个密码选项 |
+| Excel 5.0/95（BIFF5）不支持 | 只实现了 BIFF8（Excel 97 起） | 按需 |
+| xls 只索引文本单元格，不含数字和公式结果 | 只读共享字符串表 | 按需读 NUMBER/RK 记录 |
+| ppt 按流顺序取文本，反复编辑过的文件里旧版本的文字也可能被索引 | 没有解析持久化目录 | 按需 |
+| 没有声明编码的日文 Shift-JIS、繁体 Big5 文件名会解错 | 无法可靠区分，优先按简体中文 GB18030 解码 | 设置中提供文件名编码选项 |
 | mobi、azw3、djvu、pst、mbox 未解析正文 | 尚未实现 | 阶段二 |
 | iWork（pages/numbers/key）无正文 | 私有格式（IWA/protobuf） | 阶段三：读取内置预览 PDF 或 Spotlight 导入器 |
 | FTS 存储改写后的文本，CJK 正文约 2.3 倍体积 | 系统 SQLite 版本不确定是否支持 contentless_delete | 阶段二：打包较新的 SQLite 后改为 contentless 表 |
@@ -346,12 +360,13 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 - [x] 解析器：文本、HTML、JSON、Office、EPUB、ZIP、PDF、图片 + OCR、音视频、字体、RTF/DOC/ODT、QuickLook 缩略图
 - [x] SwiftUI：三栏搜索界面、筛选、详情、标签、统计、设置、FSEvents 自动更新
 - [ ] 在 Mac 上完整走查界面，补应用图标
-- [ ] zip 中文文件名编码修正
+- [x] zip 中文文件名编码修正
+- [x] libarchive：tar/gz/bz2/xz/zstd/7z/rar/iso/cab，cbr 封面
+- [x] 旧版 Office：xls、ppt
 - [ ] 详情页“在压缩包中浏览”（`Catalog.children(of:)` 已有）
 - [ ] 菜单栏常驻 + 全局快捷键唤出搜索面板（类似 Spotlight/Alfred）
 
 **阶段二（格式与后台）**
-- [ ] libarchive：tar/gz/bz2/xz/7z/rar
 - [ ] mobi/azw3、mbox/eml MIME 解析、pst
 - [ ] 后台扫描移到登录项 agent（`SMAppService`），关闭窗口后继续更新
 - [ ] 模糊搜索建议、路径补全、保存的搜索
@@ -368,7 +383,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 | 部分 | 验证方式 |
 |---|---|
-| SistCore、SistStore、SistScan、通用解析器、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，50 个单元/集成测试全部通过；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时） |
+| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，64 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时） |
 | PDFKit/ImageIO/Vision/AVFoundation/CoreText/QuickLook 解析器、SwiftUI App | macOS 15 runner 上编译通过，`make-app.sh` 打出的 arm64 + x86_64 通用 `Sist.app` 通过 `codesign --verify --strict` |
 | 界面交互、各 Apple 框架解析器对真实文件的效果 | 尚未验证：CI 只编译不运行界面，也没有 PDF/图片/音视频的样例文件测试。需要在 Mac 上实际走查 |
 

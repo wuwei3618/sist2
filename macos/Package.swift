@@ -32,12 +32,21 @@ let package = Package(
             ]
         ),
 
-        // Per-format extractors. Portable ones (text, markup, json, OOXML, EPUB, zip) build
-        // everywhere; PDFKit / ImageIO / Vision / AVFoundation / CoreText / QuickLook ones only on macOS.
+        // libarchive, as sist2 uses it: tar, 7z, rar, zip, iso... macOS has the library but no
+        // headers, so this target only declares the functions used. Linux: libarchive-dev.
+        .target(
+            name: "CArchive",
+            linkerSettings: [.linkedLibrary("archive")]
+        ),
+
+        // Per-format extractors. Portable ones (text, markup, json, OOXML, EPUB, archives, xls/ppt)
+        // build everywhere; PDFKit / ImageIO / Vision / AVFoundation / CoreText / QuickLook ones
+        // only on macOS.
         .target(
             name: "SistExtractors",
             dependencies: [
                 "SistCore",
+                "CArchive",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
             ]
         ),
@@ -75,7 +84,8 @@ let package = Package(
             dependencies: [
                 "SistExtractors",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
-            ]
+            ],
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "SistScanTests",

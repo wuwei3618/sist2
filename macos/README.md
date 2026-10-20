@@ -48,7 +48,9 @@ swift build -c release           # 构建 sist 和 sist-worker
 swift test
 ```
 
-核心引擎不依赖 Apple 专有框架，也能在 Linux 上编译测试（需要 `libsqlite3-dev`）。
+核心引擎不依赖 Apple 专有框架，也能在 Linux 上编译测试（需要 `libsqlite3-dev`、`libarchive-dev`）。macOS 上 libarchive 是系统自带的，不需要安装任何东西。
+
+测试用的压缩包和 xls/ppt 样例在 `Tests/SistExtractorsTests/Fixtures`，由其中的 `generate.py` 生成（需要 rar、bsdtar、LibreOffice）。
 
 ## 目录结构
 

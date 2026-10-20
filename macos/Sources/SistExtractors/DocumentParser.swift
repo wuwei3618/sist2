@@ -30,7 +30,7 @@ public final class DocumentParser: Sendable {
         #if canImport(PDFKit)
         extractors.append(PDFExtractor())
         #endif
-        extractors += [OOXMLExtractor(), EPUBExtractor(), ZipArchiveExtractor()]
+        extractors += [OOXMLExtractor(), EPUBExtractor(), OLEOfficeExtractor(), ComicBookExtractor(), ArchiveExtractor()]
         #if canImport(ImageIO)
         extractors.append(ImageExtractor())
         #endif
@@ -120,7 +120,7 @@ public final class DocumentParser: Sendable {
 
     func extractor(for mime: String, ext: String, depth: Int) -> (any Extractor)? {
         guard let extractor = extractors.first(where: { $0.accepts(mime: mime, ext: ext) }) else { return nil }
-        if extractor is ZipArchiveExtractor {
+        if extractor is ArchiveExtractor {
             if options.archiveMode == .skip { return nil }
             if depth > 0 && options.archiveMode == .shallow { return nil }
             if depth >= Self.maxArchiveDepth { return nil }

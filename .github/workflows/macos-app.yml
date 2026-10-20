@@ -49,8 +49,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install SQLite headers
-        run: apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev
+      - name: Install SQLite and libarchive headers
+        run: apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev libarchive-dev
 
       - name: Test
         run: swift test

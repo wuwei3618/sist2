@@ -51,12 +51,14 @@ public enum ExtractionInput: Sendable {
 public enum ExtractionError: Error, CustomStringConvertible {
     case unreadable(String)
     case invalidFormat(String)
+    case encrypted
     case timedOut
 
     public var description: String {
         switch self {
         case .unreadable(let path): return "Cannot read \(path)"
         case .invalidFormat(let reason): return "Invalid file: \(reason)"
+        case .encrypted: return "Password protected"
         case .timedOut: return "Timed out"
         }
     }

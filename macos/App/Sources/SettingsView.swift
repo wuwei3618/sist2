@@ -165,12 +165,15 @@ struct ScanOptionsSections: View {
             .disabled(options.thumbnailCount == 0)
         }
 
-        Section("压缩包") {
+        Section("压缩包和邮件") {
             Picker("压缩包内的文件", selection: $options.archiveMode) {
                 ForEach(ArchiveMode.allCases, id: \.self) { mode in
                     Text(mode.displayName).tag(mode)
                 }
             }
+            Text("邮件的附件、邮箱（mbox、pst）里的邮件也按这个设置：不处理或只索引列表时，只记下它们的名字。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
 
         Section("范围") {

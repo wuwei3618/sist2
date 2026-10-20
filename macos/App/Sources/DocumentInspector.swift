@@ -91,7 +91,11 @@ struct DocumentInspector: View {
                     Button {
                         trail.append(parent.id)
                     } label: {
-                        Label("位于压缩包 \(parent.name)", systemImage: "archivebox")
+                        if parent.category == .email {
+                            Label("位于邮件 \(parent.displayTitle)", systemImage: "envelope")
+                        } else {
+                            Label("位于压缩包 \(parent.name)", systemImage: "archivebox")
+                        }
                     }
                     .buttonStyle(.link)
                 }
@@ -181,10 +185,15 @@ struct DocumentInspector: View {
     }
 
     private func memberTitle(_ detail: DocumentDetail) -> String {
-        if case .int(let count)? = detail.metadata[MetaKey.archiveMembers] {
-            return "压缩包内容（\(count) 个文件）"
+        var count: Int64?
+        if case .int(let value)? = detail.metadata[MetaKey.archiveMembers] {
+            count = value
         }
-        return "压缩包内容"
+        if detail.summary.category == .email {
+            // A mailbox counts its messages; a message has attachments
+            return count.map { "邮件（\($0) 封）" } ?? "附件"
+        }
+        return count.map { "压缩包内容（\($0) 个文件）" } ?? "压缩包内容"
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {

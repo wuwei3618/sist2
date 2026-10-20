@@ -76,7 +76,8 @@ public enum MimeTypes {
         "numbers": "application/x-iwork-numbers-sffnumbers",
         "key": "application/x-iwork-keynote-sffkey",
         "epub": "application/epub+zip",
-        "mobi": "application/x-mobipocket-ebook", "azw3": "application/vnd.amazon.ebook",
+        "mobi": "application/x-mobipocket-ebook", "prc": "application/x-mobipocket-ebook",
+        "azw": "application/vnd.amazon.ebook", "azw3": "application/vnd.amazon.ebook",
         "fb2": "application/x-fictionbook+xml", "djvu": "image/vnd.djvu", "xps": "application/oxps",
         "cbz": "application/x-cbz", "cbr": "application/x-cbr",
         // Images
@@ -221,6 +222,8 @@ public enum MimeTypes {
         if starts([0x7F, 0x45, 0x4C, 0x46]) { return "application/x-executable" }
         if startsASCII("MZ") { return "application/x-msdownload" }
         if startsASCII("{\\rtf") { return "text/rtf" }
+        if startsASCII("BOOKMOBI", at: 60) || startsASCII("TEXtREAd", at: 60) { return "application/x-mobipocket-ebook" }
+        if startsASCII("!BDN") { return "application/vnd.ms-outlook-pst" }
 
         guard looksLikeText(b) else { return nil }
 
@@ -231,8 +234,16 @@ public enum MimeTypes {
             return head.contains("<svg") ? "image/svg+xml" : "text/xml"
         }
         if head.hasPrefix("from ") { return "application/mbox" }
+        if Self.looksLikeMessage(head) { return "message/rfc822" }
         if head.hasPrefix("{") || head.hasPrefix("[") { return "application/json" }
         return "text/plain"
+    }
+
+    /// A mail message saved without an extension starts with header fields mail software writes
+    static func looksLikeMessage(_ head: String) -> Bool {
+        let fields = ["received:", "return-path:", "delivered-to:", "mime-version:", "message-id:", "x-mozilla-status:"]
+        guard fields.contains(where: { head.hasPrefix($0) }) else { return false }
+        return head.contains("\nfrom:") || head.contains("\nsubject:") || head.contains("\ndate:")
     }
 
     /// No NUL bytes and few control characters. UTF-16 text starts with a BOM and is let through.

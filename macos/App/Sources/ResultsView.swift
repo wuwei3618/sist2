@@ -180,7 +180,7 @@ struct DocumentMenu: View {
             Divider()
             Button("拷贝路径") { first.copyPath() }
             if first.isArchiveMember {
-                Text("位于压缩包内：打开时先解压到临时文件夹")
+                Text("位于压缩包或邮件内：打开时先取出到临时文件夹")
             }
         }
     }

@@ -203,11 +203,14 @@ sequenceDiagram
 
 | 格式 | 实现 | 正文 | 缩略图 | 元数据 | 平台 |
 |---|---|---|---|---|---|
-| txt、md、csv、源代码、字幕、eml | `PlainTextExtractor`，BOM → UTF-8 → 系统编码探测（GB18030、Big5、Shift-JIS…） | ✓ | — | — | 全部（Linux 只回退到 GB18030） |
+| txt、md、csv、源代码、字幕 | `PlainTextExtractor`，BOM → UTF-8 → 系统编码探测（GB18030、Big5、Shift-JIS…） | ✓ | — | — | 全部（Linux 只回退到 GB18030） |
 | html、xhtml、xml、svg、fb2 | `MarkupExtractor`，去标签、跳过 script/style、解实体 | ✓ | — | 标题 | 全部 |
 | json、ndjson | `JSONExtractor`，收集所有字符串值 | ✓ | — | — | 全部 |
 | docx、xlsx、pptx | `OOXMLExtractor` | ✓ | 内嵌缩略图 | 标题、作者、最后修改者 | 全部 |
 | epub | `EPUBExtractor`，按 spine 顺序 | ✓ | 封面 | 标题、作者 | 全部 |
+| mobi、azw、azw3、prc | `MobiExtractor`：Palm 数据库 → PalmDOC（LZ77）解压 → 去标签；MOBI 6 和 KF8（azw3）都支持，两者合订的读 MOBI 6 部分 | ✓ | 封面 | 标题、作者、出版社、主题、语言 | 全部（缩略图仅 macOS） |
+| eml、emlx | `MailExtractor`：头字段、正文（纯文本优先，没有时取 HTML 去标签）；附件和转发的邮件作为成员 | ✓ | — | 主题、发件人、收件人、抄送、时间 | 全部 |
+| mbox | `MailExtractor`：逐行读取（可达数 GB），每封邮件作为成员，再递归它的附件 | 主题列表 | — | 邮件数 | 全部 |
 | xls、xlt | `OLEOfficeExtractor`：工作表名 + 共享字符串表（所有文本单元格） | ✓ | QuickLook | 标题、作者、最后修改者 | 全部 |
 | ppt、pps、pot | `OLEOfficeExtractor`：幻灯片、备注、文本框的文字，跳过母版 | ✓ | QuickLook | 标题、作者、最后修改者 | 全部 |
 | tar（含 .tar.gz/.tgz/.tar.bz2/.tar.xz）、7z、rar、zip、jar、iso、cab、cpio | `ArchiveExtractor`（libarchive），成员作为子文档递归索引；也可只列文件名 | 列表模式 | — | 成员数 | 全部 |
@@ -226,6 +229,16 @@ sequenceDiagram
 - xls：遍历 Workbook 流的 BIFF8 记录，取工作表名（BOUNDSHEET）和共享字符串表（SST）。SST 会被拆进多个 CONTINUE 记录，字符串在记录边界处断开时，下一段开头有一个新的标志字节，决定后面是单字节还是双字节字符，这是最容易出错的地方，测试用 3000 条中英文交替、跨 11 个 CONTINUE 记录的文件逐条核对
 - ppt：按流顺序遍历记录，进入容器，取 TextCharsAtom / TextBytesAtom，跳过母版和讲义（只有“单击此处编辑母版标题样式”这类提示），重复文本只保留一次
 - 加密文件只索引文件名和元数据。所有读取都做边界检查，损坏文件的模糊测试（随机改写/截断 300 次）不会崩溃或死循环
+
+**mobi / azw3**：Palm 数据库的第 0 条记录是 PalmDOC 头 + MOBI 头 + EXTH 元数据（作者 100、出版社 101、简介 103、主题 105、更新后的标题 503、语言 524、封面 201），之后的文本记录是 HTML（KF8 为 XHTML），通常用 PalmDOC 的 LZ77 压缩。每条文本记录末尾可能附带阅读器用的尾部数据（索引信息、被记录边界截断的多字节字符），由 MOBI 头的 extra flags 描述，按位倒序读变长整数去掉，否则正文里会混入乱码。用古登堡计划的《論語》MOBI 6 和 KF8 两个版本测试。HUFF/CDIC 压缩（少数亚马逊自产书）和 DRM 加密的书只有元数据。
+
+**邮件**：自己实现 RFC 5322 / MIME，不依赖系统框架：
+- 头字段：折行展开；RFC 2047 编码词（`=?GBK?B?…?=`），相邻的同字符集编码词合并后再解码（邮件程序常把一个汉字的字节拆到两个编码词里）；没有编码直接写 8 位字节的头字段按“UTF-8 → GB18030”解码
+- 参数：引号、转义、RFC 2231 的 `filename*=utf-8''%E4%B8%AD` 和分段 `filename*0*=`；Outlook 和国内邮箱常把编码词直接放进引号里的文件名，也能解
+- 正文：base64、quoted-printable；按 charset 解码（GBK/GB2312 → GB18030、Big5、Shift-JIS、EUC-KR、ISO-2022-JP…）；multipart/alternative 取纯文本版本，没有时取 HTML 去标签
+- 附件（有文件名或标为 attachment 的部分）和 message/rfc822（转发的邮件）作为成员，路径如 `邮件.eml#/报价单.xlsx`，再按类型递归解析；重名加序号。压缩包模式同样适用：不处理或只列名时只记附件名
+- mbox 按行读取，邮件以空行后的 `From ` 行分隔，正文里的 `>From ` 按 mboxrd 还原；每封邮件命名为 `00001 主题.eml` 作为成员
+- 在界面里打开附件时，`ArchiveMemberReader` 按同样的命名规则重新解析容器取出字节，支持多层（mbox → 邮件 → 附件 → 压缩包 → 文件）
 
 **为什么用系统框架**：不需要打包和维护 ffmpeg、MuPDF、tesseract 等大型 C 依赖（sist2 的 vcpkg 冷编译要几个小时），体积小，自动获得系统对新格式（HEIC、AVIF、新相机 RAW）的支持；Vision 的中文 OCR 效果和速度都好于 tesseract。代价是 AVFoundation 不支持 mkv/avi/wmv，这些文件只有文件名和 QuickLook 缩略图（见第 12 节）。
 
@@ -359,7 +372,8 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 | xls 只索引文本单元格，不含数字和公式结果 | 只读共享字符串表 | 按需读 NUMBER/RK 记录 |
 | ppt 按流顺序取文本，反复编辑过的文件里旧版本的文字也可能被索引 | 没有解析持久化目录 | 按需 |
 | 没有声明编码的日文 Shift-JIS、繁体 Big5 文件名会解错 | 无法可靠区分，优先按简体中文 GB18030 解码 | 设置中提供文件名编码选项 |
-| mobi、azw3、djvu、pst、mbox 未解析正文 | 尚未实现 | 阶段二 |
+| djvu、pst、msg 未解析正文 | 尚未实现 | pst、msg：阶段二 |
+| HUFF/CDIC 压缩或 DRM 加密的 mobi/azw 只有元数据 | 前者少见，后者没有密钥 | 按需 |
 | iWork（pages/numbers/key）无正文 | 私有格式（IWA/protobuf） | 阶段三：读取内置预览 PDF 或 Spotlight 导入器 |
 | macOS 13 及更老的 SQLite（< 3.43）用不了 contentless FTS，索引大一些 | `contentless_delete` 需要 3.43 | 部署目标是 macOS 14，实际不会遇到 |
 | 极宽泛的查询（命中大部分文档）要按相关度给全部命中打分，10 万文档约 0.2 秒，百万级约 2 秒 | bm25 排序需要遍历全部命中 | 命中过多时改按时间排序或只对前 N 个打分 |
@@ -434,7 +448,8 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 - [x] 菜单栏常驻 + 全局快捷键唤出搜索面板（类似 Spotlight/Alfred）
 
 **阶段二（格式与后台）**
-- [ ] mobi/azw3、mbox/eml MIME 解析、pst
+- [x] mobi/azw3、eml/emlx/mbox（MIME 解析，附件作为成员）
+- [ ] pst、msg
 - [ ] 后台扫描移到登录项 agent（`SMAppService`），关闭窗口后继续更新
 - [ ] 模糊搜索建议、路径补全、保存的搜索
 - [ ] Finder 标签与应用标签双向同步（`URLResourceValues.tagNames`）

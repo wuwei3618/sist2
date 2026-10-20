@@ -30,7 +30,8 @@ public final class DocumentParser: Sendable {
         #if canImport(PDFKit)
         extractors.append(PDFExtractor())
         #endif
-        extractors += [OOXMLExtractor(), EPUBExtractor(), OLEOfficeExtractor(), ComicBookExtractor(), ArchiveExtractor()]
+        extractors += [OOXMLExtractor(), EPUBExtractor(), MobiExtractor(), MailExtractor(), OLEOfficeExtractor(),
+                       ComicBookExtractor(), ArchiveExtractor()]
         #if canImport(ImageIO)
         extractors.append(ImageExtractor())
         #endif

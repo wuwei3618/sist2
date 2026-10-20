@@ -1,0 +1,63 @@
+1784
+Content-Type: multipart/mixed; boundary="===============5969656588030512650=="
+MIME-Version: 1.0
+From: =?utf-8?b?5byg5LiJ?= <zhangsan@example.com>
+To: =?utf-8?b?5p2O5Zub?= <lisi@example.com>
+Cc: zhaoliu@example.com
+Subject: =?gbk?b?vL62yLGouOajuruqtqu12Mf4z/rK28r9vt0=?=
+Date: Tue, 05 Mar 2024 14:30:00 +0800
+
+--===============5969656588030512650==
+Content-Type: multipart/alternative;
+ boundary="===============3671313268019454914=="
+MIME-Version: 1.0
+
+--===============3671313268019454914==
+Content-Type: text/plain; charset="gbk"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+
+uPfOu7rDo7oKuL28/srHu6q2q7XYx/i1xLy+tsjP+srbyv2+3aGjCnBsYWluIGJvZHkgbWFya2Vy
+
+--===============3671313268019454914==
+Content-Type: text/html; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+
+PGh0bWw+PGJvZHk+PHA+5ZCE5L2N5aW977yaPC9wPjxwPkhUTUwg54mI5pysIGh0bWwtb25seSBt
+YXJrZXI8L3A+PC9ib2R5PjwvaHRtbD4=
+
+--===============3671313268019454914==--
+
+--===============5969656588030512650==
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment;
+ filename*=utf-8''%E9%94%80%E5%94%AE%E6%95%B0%E6%8D%AE.txt
+
+6ZmE5Lu26YeM55qE5paH5a2XIGF0dGFjaG1lbnQgd2FscnVz
+
+--===============5969656588030512650==
+Content-Type: application/octet-stream
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="data.bin"
+
+AAECIG5vdCB0ZXh0
+
+--===============5969656588030512650==
+Content-Type: message/rfc822
+MIME-Version: 1.0
+
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+Subject: =?utf-8?b?6L2s5Y+R77ya6aG555uu6K6h5YiS?=
+From: wangwu@example.com
+
+6KKr6L2s5Y+R55qE6YKu5Lu25q2j5paHIGZvcndhcmRlZCB3YWxydXM=
+
+--===============5969656588030512650==--
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>flags</key><integer>8590195713</integer></dict></plist>

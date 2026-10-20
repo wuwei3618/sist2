@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Regenerates the archive and legacy Office fixtures in this directory.
 
+Not generated: lunyu.mobi and lunyu.azw3 are Project Gutenberg eBook #23839 (論語, public domain)
+as gutenberg.org builds it for Kindle, downloaded from
+https://www.gutenberg.org/ebooks/23839.kindle.noimages and .kf8.images.
+
 Needs: bsdtar (libarchive-tools), rar (rarlab.com), LibreOffice (soffice), python-pptx, openpyxl.
+The mail fixtures (chinese.eml, message.emlx, inbox.mbox) only need Python's email and mailbox.
     python3 generate.py
 
 The tests assert on the words written here, so keep them in sync with ArchiveTests/OLETests.
@@ -161,8 +166,84 @@ def office(tmp):
     zipped(out("sample.ppt"))
 
 
+def chinese_message():
+    """GBK-encoded headers and body, an HTML alternative, an attachment with an RFC 2231 name,
+    and a forwarded message."""
+    from email.header import Header
+    from email.mime.application import MIMEApplication
+    from email.mime.message import MIMEMessage
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.utils import formataddr
+
+    forwarded = MIMEText("被转发的邮件正文 forwarded walrus", "plain", "utf-8")
+    forwarded["Subject"] = Header("转发：项目计划", "utf-8")
+    forwarded["From"] = "wangwu@example.com"
+
+    alternative = MIMEMultipart("alternative")
+    alternative.attach(MIMEText("各位好：\n附件是华东地区的季度销售数据。\nplain body marker", "plain", "gbk"))
+    alternative.attach(MIMEText("<html><body><p>各位好：</p><p>HTML 版本 html-only marker</p></body></html>",
+                                "html", "utf-8"))
+
+    message = MIMEMultipart("mixed")
+    message["From"] = formataddr((str(Header("张三", "gb2312")), "zhangsan@example.com"))
+    message["To"] = formataddr((str(Header("李四", "utf-8")), "lisi@example.com"))
+    message["Cc"] = "zhaoliu@example.com"
+    message["Subject"] = Header("季度报告：华东地区销售数据", "gbk")
+    message["Date"] = "Tue, 05 Mar 2024 14:30:00 +0800"
+    message.attach(alternative)
+    attachment = MIMEText("附件里的文字 attachment walrus", "plain", "utf-8")
+    attachment.add_header("Content-Disposition", "attachment", filename=("utf-8", "", "销售数据.txt"))
+    message.attach(attachment)
+    binary = MIMEApplication(b"\x00\x01\x02 not text", "octet-stream")
+    binary.add_header("Content-Disposition", "attachment", filename="data.bin")
+    message.attach(binary)
+    message.attach(MIMEMessage(forwarded))
+    return message
+
+
+def mail():
+    import mailbox
+    import time
+    from email.charset import QP, Charset
+    from email.mime.text import MIMEText
+
+    message = chinese_message()
+    with open(out("chinese.eml"), "wb") as f:
+        f.write(message.as_bytes())
+
+    # Apple Mail: the message length, the message, a property list
+    data = message.as_bytes()
+    with open(out("message.emlx"), "wb") as f:
+        f.write(b"%d\n" % len(data) + data)
+        f.write(b'<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>flags</key>'
+                b"<integer>8590195713</integer></dict></plist>\n")
+
+    path = out("inbox.mbox")
+    if os.path.exists(path):
+        os.remove(path)
+    box = mailbox.mbox(path)
+    quoted_printable = Charset("utf-8")
+    quoted_printable.body_encoding = QP
+    # The second line starts with "From ": the mailbox escapes it as ">From "
+    first = MIMEText("第一封邮件\nFrom the start of a line, escaped in the mailbox\n", "plain", quoted_printable)
+    first["Subject"] = "第一封：会议通知"
+    first["From"] = "a@example.com"
+    first["Date"] = "Mon, 04 Mar 2024 09:00:00 +0000"
+    third = MIMEText("third message about penguins", "plain", "us-ascii")
+    third["Subject"] = "Third / with a slash"
+    third["From"] = "c@example.com"
+    for message in [first, chinese_message(), third]:
+        entry = mailbox.mboxMessage(message)
+        entry.set_from("sender@example.com", time.gmtime(1709542800))
+        box.add(entry)
+    box.flush()
+    box.close()
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as tmp:
         archives(tmp)
         office(tmp)
+    mail()
     print("fixtures written to", HERE)

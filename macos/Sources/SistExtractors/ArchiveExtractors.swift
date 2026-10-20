@@ -290,7 +290,9 @@ public enum ArchiveMemberReader {
         var input = ExtractionInput.file(path: parts[0])
         var data = Data()
         for member in parts.dropFirst() {
-            data = try ArchiveExtractor.member(member, in: input, limit: limit)
+            data = MailExtractor.isMail(input)
+                ? try MailExtractor.member(member, in: input, limit: limit)
+                : try ArchiveExtractor.member(member, in: input, limit: limit)
             input = .data(data, name: member.lastPathComponentFast)
         }
         return data

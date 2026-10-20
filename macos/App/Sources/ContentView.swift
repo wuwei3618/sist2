@@ -37,7 +37,7 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.inline)
-                    Toggle("包含压缩包内的文件", isOn: $search.includeArchiveMembers)
+                    Toggle("包含压缩包和邮件内的文件", isOn: $search.includeArchiveMembers)
                 } label: {
                     Label("排序", systemImage: "arrow.up.arrow.down")
                 }

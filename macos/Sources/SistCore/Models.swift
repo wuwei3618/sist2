@@ -81,6 +81,14 @@ public enum MetaKey {
     public static let gpsLatitude = "gps_latitude"
     public static let gpsLongitude = "gps_longitude"
     public static let archiveMembers = "archive_members"
+    public static let publisher = "publisher"
+    public static let keywords = "keywords"
+    public static let language = "language"
+    public static let emailFrom = "email_from"
+    public static let emailTo = "email_to"
+    public static let emailCc = "email_cc"
+    /// ISO 8601
+    public static let emailDate = "email_date"
 }
 
 /// What a parser produces for one file or archive member.

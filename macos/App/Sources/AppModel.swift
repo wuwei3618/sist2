@@ -317,7 +317,7 @@ final class AppModel {
                 }.value
                 action(url)
             } catch {
-                self?.errorMessage = "无法从压缩包中取出 \(document.name)：\(error)"
+                self?.errorMessage = "无法取出 \(document.name)：\(error)"
             }
         }
     }

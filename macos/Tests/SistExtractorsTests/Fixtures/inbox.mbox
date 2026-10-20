@@ -1,0 +1,80 @@
+From sender@example.com Mon Mar  4 09:00:00 2024
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: quoted-printable
+Subject: =?utf-8?b?56ys5LiA5bCB77ya5Lya6K6u6YCa55+l?=
+From: a@example.com
+Date: Mon, 04 Mar 2024 09:00:00 +0000
+
+=E7=AC=AC=E4=B8=80=E5=B0=81=E9=82=AE=E4=BB=B6
+>From the start of a line, escaped in the mailbox
+
+From sender@example.com Mon Mar  4 09:00:00 2024
+Content-Type: multipart/mixed; boundary="===============8509859488091896239=="
+MIME-Version: 1.0
+From: =?utf-8?b?5byg5LiJ?= <zhangsan@example.com>
+To: =?utf-8?b?5p2O5Zub?= <lisi@example.com>
+Cc: zhaoliu@example.com
+Subject: =?gbk?b?vL62yLGouOajuruqtqu12Mf4z/rK28r9vt0=?=
+Date: Tue, 05 Mar 2024 14:30:00 +0800
+
+--===============8509859488091896239==
+Content-Type: multipart/alternative; boundary="===============3768468224505436978=="
+MIME-Version: 1.0
+
+--===============3768468224505436978==
+Content-Type: text/plain; charset="gbk"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+
+uPfOu7rDo7oKuL28/srHu6q2q7XYx/i1xLy+tsjP+srbyv2+3aGjCnBsYWluIGJvZHkgbWFya2Vy
+
+--===============3768468224505436978==
+Content-Type: text/html; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+
+PGh0bWw+PGJvZHk+PHA+5ZCE5L2N5aW977yaPC9wPjxwPkhUTUwg54mI5pysIGh0bWwtb25seSBt
+YXJrZXI8L3A+PC9ib2R5PjwvaHRtbD4=
+
+--===============3768468224505436978==--
+
+--===============8509859488091896239==
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename*=utf-8''%E9%94%80%E5%94%AE%E6%95%B0%E6%8D%AE.txt
+
+6ZmE5Lu26YeM55qE5paH5a2XIGF0dGFjaG1lbnQgd2FscnVz
+
+--===============8509859488091896239==
+Content-Type: application/octet-stream
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="data.bin"
+
+AAECIG5vdCB0ZXh0
+
+--===============8509859488091896239==
+Content-Type: message/rfc822
+MIME-Version: 1.0
+
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+Subject: =?utf-8?b?6L2s5Y+R77ya6aG555uu6K6h5YiS?=
+From: wangwu@example.com
+
+6KKr6L2s5Y+R55qE6YKu5Lu25q2j5paHIGZvcndhcmRlZCB3YWxydXM=
+
+--===============8509859488091896239==--
+
+From sender@example.com Mon Mar  4 09:00:00 2024
+Content-Type: text/plain; charset="us-ascii"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+Subject: Third / with a slash
+From: c@example.com
+
+third message about penguins
+

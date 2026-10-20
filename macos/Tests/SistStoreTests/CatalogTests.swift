@@ -419,3 +419,61 @@ func doc(_ path: String, parent: String? = nil, content: String? = nil, mime: St
         #expect(ContentCodec.decode(DatabaseValue.null) == nil)
     }
 }
+
+@Suite struct SuggestionTests {
+    @Test func spellingSuggestions() async throws {
+        let (catalog, directory) = try makeCatalog()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let source = try await catalog.addSource(root: "/r")
+        let scan = try await catalog.writer.beginScan(sourceId: source.id)
+        try await catalog.writer.write([
+            doc("/r/a.txt", content: "quarterly revenue report for the budget meeting"),
+            doc("/r/b.txt", content: "another report, and a repast"),
+            doc("/r/c.txt", content: "季度报告 reporter"),
+        ], source: source, scanId: scan)
+
+        #expect(try await catalog.spellingSuggestion(for: "reprot") == "report")
+        #expect(try await catalog.spellingSuggestion(for: "quartrly revenue") == "quarterly revenue")
+        #expect(try await catalog.spellingSuggestion(for: "Budgte") == "budget")
+        // Words the index has, words too far from any, and CJK are left alone
+        #expect(try await catalog.spellingSuggestion(for: "report") == nil)
+        #expect(try await catalog.spellingSuggestion(for: "zzzzzz") == nil)
+        #expect(try await catalog.spellingSuggestion(for: "季度") == nil)
+        #expect(try await catalog.spellingSuggestion(for: "") == nil)
+    }
+
+    @Test func editDistance() {
+        func d(_ a: String, _ b: String, _ limit: Int = 3) -> Int? {
+            Spelling.distance(Array(a.utf8), Array(b.utf8), limit: limit)
+        }
+        #expect(d("report", "reprot") == 1)
+        #expect(d("budget", "budgte") == 1)
+        #expect(d("kitten", "sitting") == 3)
+        #expect(d("kitten", "sitting", 2) == nil)
+        #expect(d("abc", "abc") == 0)
+        #expect(d("", "ab") == 2)
+    }
+
+    @Test func folderSuggestions() async throws {
+        let (catalog, directory) = try makeCatalog()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        _ = try await FolderAndScopeTests().populate(catalog)
+        #expect(try await catalog.folders(matching: "b").map(\.path) == ["/r/a/b"])
+        #expect(try await catalog.folders(matching: "/r/a").map(\.path) == ["/r/a", "/r/a/b"])
+        #expect(try await catalog.folders(matching: "%").isEmpty)
+        #expect(try await catalog.folders(matching: "  ").isEmpty)
+    }
+
+    @Test func savedSearches() async throws {
+        let (catalog, directory) = try makeCatalog()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let saved = try await catalog.saveSearch(name: " 季度报告 ", state: #"{"text":"季度报告"}"#)
+        try await catalog.saveSearch(name: "budget", state: "{}")
+        #expect(try await catalog.savedSearches().map(\.name) == ["budget", "季度报告"])
+        try await catalog.renameSavedSearch(id: saved.id, to: "报告")
+        try await catalog.deleteSavedSearch(id: try await catalog.savedSearches()[0].id)
+        let remaining = try await catalog.savedSearches()
+        #expect(remaining.map(\.name) == ["报告"])
+        #expect(remaining.first?.state == #"{"text":"季度报告"}"#)
+    }
+}

@@ -8,6 +8,8 @@ struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(SearchModel.self) private var search
     @State private var sourceToRemove: SourceInfo?
+    @State private var searchToRename: SavedSearch?
+    @State private var newName = ""
 
     var body: some View {
         List {
@@ -21,6 +23,25 @@ struct SidebarView: View {
                     Label("添加文件夹…", systemImage: "plus")
                 }
                 .buttonStyle(.borderless)
+            }
+
+            if !search.savedSearches.isEmpty {
+                Section("保存的搜索") {
+                    ForEach(search.savedSearches) { saved in
+                        Label(saved.name, systemImage: "bookmark")
+                            .contentShape(Rectangle())
+                            .onTapGesture { search.apply(saved) }
+                            .contextMenu {
+                                Button("重命名…") {
+                                    newName = saved.name
+                                    searchToRename = saved
+                                }
+                                Button("删除", role: .destructive) {
+                                    Task { await search.deleteSavedSearch(saved) }
+                                }
+                            }
+                    }
+                }
             }
 
             Section("类型") {
@@ -60,6 +81,15 @@ struct SidebarView: View {
             }
         } message: { _ in
             Text("只删除索引数据，磁盘上的文件不受影响。")
+        }
+        .alert("重命名搜索", isPresented: Binding(get: { searchToRename != nil }, set: { if !$0 { searchToRename = nil } }),
+               presenting: searchToRename) { saved in
+            TextField("名称", text: $newName)
+            Button("重命名") {
+                let name = newName
+                Task { await search.renameSavedSearch(saved, to: name) }
+            }
+            Button("取消", role: .cancel) {}
         }
     }
 

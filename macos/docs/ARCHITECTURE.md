@@ -293,7 +293,13 @@ SQLite 自带的 `unicode61` 分词器只按分隔符切分，一整段中文会
 
 二元组的每个 (词, 文档) 条目只出现一两次，条目开销（文档号、长度、列号、位置）比文字本身还大；单字词表只有几千个，条目集中、位置差值小。多字查询变慢是因为要读常用字很长的位置列表，但在 10 万篇大文档的规模下仍在 0.2 秒以内，而单字查询（边输入边搜时的第一个字）快了一个数量级。连同正文压缩，整个 catalog 在中文语料上从 204 MB 降到 107 MB，扫描从 30 秒降到 15 秒。旧的 catalog 打开时由 v4 迁移重建索引、压缩正文，再 `VACUUM` 释放空间。
 
-### 8.2 查询语法
+### 8.2 建议与保存的搜索
+
+- **拼写建议**（代替 sist2 依赖的 SQLite spellfix 扩展，系统 SQLite 没有它）：`document_vocab` 是 FTS5 的 `fts5vocab` 虚表，直接列出索引里的词和包含它的文档数，不另占空间、不用维护。搜索没有结果时，对每个索引里没有的拉丁字母词，在首字母相同、长度相差不超过 2 的词里找编辑距离（含相邻换位）最小、文档最多的一个（短词最多 1 处、长词最多 2 处差异），替换后的查询确实有结果才给出“您是不是要找……”。命令行同样提示 `Did you mean`
+- **文件夹与路径补全**：输入时，搜索框下列出名字包含正在输入的词的文件夹（按文件数排序）；输入以 `/` 或 `~` 开头时按路径前缀补全。选中即把搜索限定到该文件夹
+- **保存的搜索**：关键词连同全部筛选（源、文件夹、类型、大小、时间、标签、排序）存进 catalog 的 `saved_search` 表，侧边栏列出，可重命名、删除；时间预设按名字保存（“最近 7 天”在每次使用时重新计算）。搜索框输入时也会列出名字匹配的保存的搜索
+
+### 8.3 查询语法
 
 查询由 `QueryParser` 转成 FTS5 表达式，所有词都加引号转义，任何输入都不会产生 FTS5 语法错误：
 
@@ -398,7 +404,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 | 极宽泛的查询（命中大部分文档）要按相关度给全部命中打分，10 万文档约 0.2 秒，百万级约 2 秒 | bm25 排序需要遍历全部命中 | 命中过多时改按时间排序或只对前 N 个打分 |
 | 中文按单字索引，常用字组成的词要读很长的位置列表：10 万篇大文档约 0.1–0.2 秒 | 换来索引减半、写入快 4 倍、单字搜索快 10 倍（第 8.1 节） | 规模再大时可以只为高频字对加二元组 |
 | 进程内模式无法中止卡住的解析 | 线程不能被安全杀死 | 正式包始终使用 sist-worker |
-| 模糊搜索（sist2 的 spellfix） | 系统 SQLite 未编译 spellfix | 阶段二：基于 trigram 表的建议 |
+| 拼写建议只纠正拉丁字母的词，且假定首字母没错 | 中文按单字索引，无所谓拼写；首字母相同的词才进候选，避免扫全部词表 | 按需 |
 
 ---
 
@@ -470,7 +476,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 - [x] mobi/azw3、eml/emlx/mbox（MIME 解析，附件作为成员）
 - [x] pst（ANSI、Unicode）、msg
 - [x] 后台扫描移到登录项 agent（`SMAppService`），关闭窗口、退出 App 后继续更新
-- [ ] 模糊搜索建议、路径补全、保存的搜索
+- [x] 拼写建议、文件夹/路径补全、保存的搜索
 - [ ] Finder 标签与应用标签双向同步（`URLResourceValues.tagNames`）
 
 **阶段三（语义搜索，对应 sist2 的 embeddings）**
@@ -484,7 +490,7 @@ worker → 扫描：document(ParsedDocument) · thumbnail(JPEG，属于上一个
 
 | 部分 | 验证方式 |
 |---|---|
-| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，109 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
+| SistCore、SistStore、SistScan、通用解析器（含压缩包、xls/ppt）、sist、sist-worker | Linux（Swift 6.2）与 macOS 15 上编译通过，113 个单元/集成测试全部通过，压缩包和 xls/ppt 用 `Tests/SistExtractorsTests/Fixtures` 里由 rar、bsdtar、LibreOffice 生成的真实文件测试，mobi/azw3 用古登堡计划的真实电子书，邮件用 Python email 库生成的文件，msg/pst 用经 extract-msg、libpst、libpff 校验过的生成文件；另用 CLI 做了端到端测试（中文搜索、增量扫描、压缩包、worker 崩溃与超时）和 10 万文件的基准测试（第 13 节） |
 | PDFKit/ImageIO/Vision/AVFoundation/CoreText/QuickLook 解析器、SwiftUI App | macOS 15 runner 上编译通过，`make-app.sh` 打出的 arm64 + x86_64 通用 `Sist.app` 通过 `codesign --verify --strict` |
 | 界面交互、各 Apple 框架解析器对真实文件的效果 | 尚未验证：CI 只编译不运行界面，也没有 PDF/图片/音视频的样例文件测试。需要在 Mac 上实际走查 |
 

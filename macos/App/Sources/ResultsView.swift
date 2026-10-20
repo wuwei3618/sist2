@@ -26,6 +26,14 @@ struct ResultsView: View {
                 if search.text.isEmpty {
                     ContentUnavailableView("没有文件", systemImage: "doc.text.magnifyingglass",
                                            description: Text("调整左侧的筛选条件试试。"))
+                } else if let suggestion = search.spellingSuggestion {
+                    ContentUnavailableView {
+                        Label("没有“\(search.text)”的结果", systemImage: "magnifyingglass")
+                    } description: {
+                        Text("可能是拼写错误。")
+                    } actions: {
+                        Button("搜索“\(suggestion)”") { search.text = suggestion }
+                    }
                 } else {
                     ContentUnavailableView.search(text: search.text)
                 }

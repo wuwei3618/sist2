@@ -92,6 +92,7 @@ final class AppModel {
             search.catalog = catalog
             await refreshSources()
             await refreshTags()
+            await search.loadSavedSearches()
             search.run()
             listenToAgent()
             refreshAgentStatus()

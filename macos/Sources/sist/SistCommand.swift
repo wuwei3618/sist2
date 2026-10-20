@@ -227,6 +227,9 @@ struct Search: AsyncParsableCommand {
             }
         }
         print("\(results.total) results in \(String(format: "%.0f", results.elapsed * 1000)) ms")
+        if results.total == 0, let suggestion = try await catalog.spellingSuggestion(for: search.text) {
+            print("Did you mean: \(suggestion)")
+        }
     }
 }
 

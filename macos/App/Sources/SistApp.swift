@@ -21,6 +21,10 @@ struct SistMacApp: App {
                 Button("添加文件夹…") { model.chooseFoldersToAdd() }
                     .keyboardShortcut("o")
             }
+            CommandGroup(replacing: .saveItem) {
+                Button("保存搜索…") { model.search.isSavingSearch = true }
+                    .keyboardShortcut("s")
+            }
             CommandMenu("索引") {
                 Button("扫描全部文件夹") { model.scanAll() }
                     .keyboardShortcut("r")

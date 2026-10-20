@@ -147,3 +147,11 @@ public struct TagCount: Sendable, Hashable, Identifiable {
     public var count: Int
     public var id: String { name }
 }
+
+/// A saved search. The state (query and filters) is the app's to encode.
+public struct SavedSearch: Sendable, Hashable, Identifiable {
+    public var id: Int64
+    public var name: String
+    public var state: String
+    public var createdAt: Date
+}

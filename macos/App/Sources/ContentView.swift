@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(AppModel.self) private var model
     @Environment(SearchModel.self) private var search
     @Environment(\.openWindow) private var openWindow
+    @State private var savedSearchName = ""
 
     var body: some View {
         @Bindable var search = search
@@ -21,6 +22,9 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 300, ideal: 380)
         }
         .searchable(text: $search.text, placement: .toolbar, prompt: "搜索文件名、内容、路径…")
+        .searchSuggestions {
+            SearchSuggestions()
+        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Picker("显示方式", selection: $search.displayMode) {
@@ -46,6 +50,13 @@ struct ContentView: View {
                 FilterButton()
 
                 Button {
+                    search.isSavingSearch = true
+                } label: {
+                    Label("保存搜索", systemImage: "bookmark")
+                }
+                .help("把当前的搜索和筛选保存到侧边栏")
+
+                Button {
                     openWindow(id: "stats")
                 } label: {
                     Label("统计", systemImage: "chart.bar.xaxis")
@@ -54,6 +65,21 @@ struct ContentView: View {
             }
         }
         .quickLookPreview($search.previewURL)
+        .alert("保存搜索", isPresented: $search.isSavingSearch) {
+            TextField("名称", text: $savedSearchName)
+            Button("保存") {
+                let name = savedSearchName
+                Task { await search.saveCurrentSearch(name: name) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("关键词和当前的筛选条件会一起保存。")
+        }
+        .onChange(of: search.isSavingSearch) {
+            if search.isSavingSearch {
+                savedSearchName = search.text.isEmpty ? "新搜索" : search.text
+            }
+        }
         .onAppear {
             model.openMainWindow = { openWindow(id: "main") }
         }
@@ -224,5 +250,35 @@ private struct FilterChip: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(Color.accentColor.opacity(0.15), in: Capsule())
+    }
+}
+
+/// Under the search field: folders whose name (or path) matches what is typed, saved searches,
+/// and a corrected spelling when the search finds nothing
+private struct SearchSuggestions: View {
+    @Environment(SearchModel.self) private var search
+
+    var body: some View {
+        if let suggestion = search.spellingSuggestion {
+            Label("您是不是要找：\(suggestion)", systemImage: "wand.and.stars")
+                .searchCompletion(suggestion)
+        }
+        ForEach(search.matchingSavedSearches) { saved in
+            Label(saved.name, systemImage: "bookmark")
+                .searchCompletion(SearchModel.completion(for: saved))
+        }
+        ForEach(search.folderSuggestions) { folder in
+            Label {
+                VStack(alignment: .leading) {
+                    Text("在“\(folder.name)”中查找")
+                    Text(folder.path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: "folder")
+            }
+            .searchCompletion(SearchModel.completion(for: folder))
+        }
     }
 }

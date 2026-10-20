@@ -191,14 +191,52 @@ extension Catalog {
         }
     }
 
-    /// Path completions for a typed prefix
-    public func suggestPaths(prefix: String, limit: Int = 20) async throws -> [String] {
-        try await pool.read { db in
-            try String.fetchAll(db, sql: """
-                SELECT DISTINCT rtrim(path, replace(path, '/', '')) AS directory FROM document
-                WHERE path >= ? AND path < ? AND parentId IS NULL LIMIT ?
-                """, arguments: [prefix, prefix + "\u{10FFFF}", limit])
+    /// Folders to offer while typing: those whose path starts with the text when it looks like a
+    /// path (`~` for the home folder), else those whose name contains it; the fullest first.
+    public func folders(matching text: String, limit: Int = 8) async throws -> [FolderInfo] {
+        let text = text.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return [] }
+        return try await pool.read { db in
+            let rows: [Row]
+            if text.hasPrefix("/") || text.hasPrefix("~") {
+                let path = (text as NSString).expandingTildeInPath
+                rows = try Row.fetchAll(db, sql: """
+                    SELECT f.sourceId, f.path, f.name, f.count, f.size,
+                           EXISTS (SELECT 1 FROM folder c WHERE c.sourceId = f.sourceId AND c.parent = f.path) AS sub
+                    FROM folder f WHERE f.path >= ? AND f.path < ? ORDER BY length(f.path), f.path LIMIT ?
+                    """, arguments: [path, path + "\u{10FFFF}", limit])
+            } else {
+                let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
+                rows = try Row.fetchAll(db, sql: """
+                    SELECT f.sourceId, f.path, f.name, f.count, f.size,
+                           EXISTS (SELECT 1 FROM folder c WHERE c.sourceId = f.sourceId AND c.parent = f.path) AS sub
+                    FROM folder f WHERE f.name LIKE ? ESCAPE '\\' AND f.parent IS NOT NULL
+                    ORDER BY f.count DESC LIMIT ?
+                    """, arguments: ["%" + escaped + "%", limit])
+            }
+            return rows.map { Catalog.folderInfo($0, sourceId: $0["sourceId"]) }
         }
+    }
+
+    /// A corrected query when `text` finds nothing because of a typo: each Latin word missing from
+    /// the index is replaced by the most common indexed word within one or two edits of it. Only
+    /// suggested when the corrected query finds something.
+    public func spellingSuggestion(for text: String) async throws -> String? {
+        let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !words.isEmpty else { return nil }
+        let corrected: [String] = try await pool.read { db in
+            try words.map { word in
+                guard let candidate = try Spelling.correction(for: word, in: db) else { return word }
+                return candidate
+            }
+        }
+        guard corrected != words else { return nil }
+        let suggestion = corrected.joined(separator: " ")
+        var query = SearchQuery(text: suggestion)
+        query.limit = 1
+        query.countCategories = false
+        return try await search(query).hits.isEmpty ? nil : suggestion
     }
 
     static func placeholders(_ count: Int) -> String {

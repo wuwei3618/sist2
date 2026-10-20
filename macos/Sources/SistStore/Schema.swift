@@ -189,6 +189,22 @@ enum Schema {
             }
         }
 
+        migrator.registerMigration("v5") { db in
+            try db.execute(sql: """
+                -- Searches the user saved: the query and filters as the app encodes them
+                CREATE TABLE saved_search (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    createdAt DATETIME NOT NULL
+                );
+
+                -- The terms of the full-text index with their document counts, for spelling
+                -- suggestions (sist2 uses spellfix, which the system SQLite does not have)
+                CREATE VIRTUAL TABLE document_vocab USING fts5vocab(document_fts, 'row');
+                """)
+        }
+
         return migrator
     }
 

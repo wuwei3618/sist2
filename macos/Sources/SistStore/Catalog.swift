@@ -219,6 +219,40 @@ public final class Catalog: Sendable {
                    size: row["size"], hasSubfolders: row["sub"])
     }
 
+    // MARK: Saved searches
+
+    public func savedSearches() async throws -> [SavedSearch] {
+        try await pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT id, name, state, createdAt FROM saved_search ORDER BY name COLLATE NOCASE")
+                .map { SavedSearch(id: $0["id"], name: $0["name"], state: $0["state"], createdAt: $0["createdAt"]) }
+        }
+    }
+
+    @discardableResult
+    public func saveSearch(name: String, state: String) async throws -> SavedSearch {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let now = Date()
+        return try await pool.write { db in
+            try db.execute(sql: "INSERT INTO saved_search (name, state, createdAt) VALUES (?, ?, ?)",
+                           arguments: [name, state, now])
+            return SavedSearch(id: db.lastInsertedRowID, name: name, state: state, createdAt: now)
+        }
+    }
+
+    public func renameSavedSearch(id: Int64, to name: String) async throws {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE saved_search SET name = ? WHERE id = ?", arguments: [name, id])
+        }
+    }
+
+    public func deleteSavedSearch(id: Int64) async throws {
+        try await pool.write { db in
+            try db.execute(sql: "DELETE FROM saved_search WHERE id = ?", arguments: [id])
+        }
+    }
+
     // MARK: Tags
 
     public func addTag(_ name: String, to documentId: Int64) async throws {
